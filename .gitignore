@@ -1,0 +1,10 @@
+.env
+.venv/
+.local-worker/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.diagnostic-fixture/
+.diagnostic-task.json

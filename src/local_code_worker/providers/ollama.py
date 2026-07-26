@@ -1,0 +1,232 @@
+import json
+import time
+from datetime import UTC, datetime
+from urllib.parse import urlsplit, urlunsplit
+
+import httpx
+
+from ..config import WorkerSettings
+from ..exceptions import ProviderError
+from ..models import GenerationMetadata, JsonMode, ProviderHealth, ProviderName
+
+
+class OllamaProvider:
+    def __init__(self, settings: WorkerSettings, transport: httpx.BaseTransport | None = None):
+        self.settings = settings
+        self.transport = transport
+        self.last_generation_metadata: GenerationMetadata | None = None
+
+    @property
+    def base_url(self) -> str:
+        parts = urlsplit(str(self.settings.llm_base_url))
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+        return urlunsplit((parts.scheme, netloc, parts.path.rstrip("/"), "", ""))
+
+    def _client(self) -> httpx.Client:
+        timeout = httpx.Timeout(
+            self.settings.llm_timeout_seconds,
+            connect=self.settings.llm_connect_timeout_seconds,
+            read=self.settings.llm_read_timeout_seconds,
+        )
+        return httpx.Client(timeout=timeout, transport=self.transport)
+
+    def list_models(self) -> list[str]:
+        url = f"{self.base_url}/api/tags"
+        try:
+            with self._client() as client:
+                response = client.get(url)
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.ConnectError as error:
+            raise ProviderError(
+                f"Cannot connect to Ollama at {url}", category="connection"
+            ) from error
+        except httpx.TimeoutException as error:
+            raise ProviderError(f"Ollama request timed out at {url}", category="timeout") from error
+        except httpx.TransportError as error:
+            raise ProviderError(
+                f"Ollama transport failed at {url}",
+                category="transport_error",
+            ) from error
+        except httpx.HTTPStatusError as error:
+            raise ProviderError(
+                f"Ollama returned HTTP {error.response.status_code}", category="http_error"
+            ) from error
+        except (ValueError, TypeError) as error:
+            raise ProviderError(
+                "Ollama /api/tags returned invalid JSON", category="invalid_json"
+            ) from error
+        models = payload.get("models") if isinstance(payload, dict) else None
+        if not isinstance(models, list):
+            raise ProviderError(
+                "Ollama /api/tags response has no models array", category="invalid_json"
+            )
+        return [model.get("name", "") for model in models if isinstance(model, dict)]
+
+    def check_connection(self) -> ProviderHealth:
+        try:
+            models = self.list_models()
+        except ProviderError as error:
+            return ProviderHealth(
+                provider=ProviderName.OLLAMA,
+                base_url=self.base_url,
+                model=self.settings.llm_model,
+                reachable=False,
+                model_available=False,
+                details=str(error),
+            )
+        available = self.settings.llm_model in models
+        return ProviderHealth(
+            provider=ProviderName.OLLAMA,
+            base_url=self.base_url,
+            model=self.settings.llm_model,
+            reachable=True,
+            model_available=available,
+            details="Model is installed" if available else "Configured model is not installed",
+        )
+
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        response_schema: dict[str, object] | None,
+        max_output_characters: int,
+    ) -> str:
+        request_body: dict[str, object] = {
+            "model": self.settings.llm_model,
+            "stream": self.settings.llm_stream,
+            "keep_alive": self.settings.llm_keep_alive,
+            "messages": messages,
+            "options": {
+                "temperature": self.settings.llm_temperature,
+                "num_ctx": self.settings.llm_num_ctx,
+            },
+        }
+        mode = self.settings.llm_json_mode
+        if mode in {JsonMode.AUTO, JsonMode.JSON_SCHEMA} and response_schema is not None:
+            request_body["format"] = response_schema
+        elif mode is JsonMode.JSON_OBJECT:
+            request_body["format"] = "json"
+
+        started_at = datetime.now(UTC)
+        started = time.monotonic()
+        finish_reason: str | None = None
+        try:
+            with self._client() as client:
+                if self.settings.llm_stream:
+                    content, finish_reason = self._stream_chat(
+                        client, request_body, max_output_characters
+                    )
+                else:
+                    content, finish_reason = self._non_stream_chat(
+                        client, request_body, max_output_characters
+                    )
+        except httpx.ConnectError as error:
+            raise ProviderError(
+                f"Cannot connect to Ollama at {self.base_url}", category="connection"
+            ) from error
+        except httpx.TimeoutException as error:
+            raise ProviderError("Ollama response timed out", category="timeout") from error
+        except httpx.TransportError as error:
+            raise ProviderError(
+                "Ollama response transport failed",
+                category="transport_error",
+            ) from error
+        except httpx.HTTPStatusError as error:
+            raise ProviderError(
+                f"Ollama returned HTTP {error.response.status_code}", category="http_error"
+            ) from error
+
+        completed_at = datetime.now(UTC)
+        self.last_generation_metadata = GenerationMetadata(
+            provider=ProviderName.OLLAMA,
+            model=self.settings.llm_model,
+            base_url=self.base_url,
+            started_at=started_at.isoformat(),
+            completed_at=completed_at.isoformat(),
+            duration_seconds=time.monotonic() - started,
+            prompt_characters=sum(len(message["content"]) for message in messages),
+            output_characters=len(content),
+            streaming=self.settings.llm_stream,
+            response_format_mode=mode,
+            finish_reason=finish_reason,
+        )
+        return content
+
+    def _stream_chat(
+        self, client: httpx.Client, request_body: dict[str, object], limit: int
+    ) -> tuple[str, str | None]:
+        parts: list[str] = []
+        total = 0
+        finish_reason: str | None = None
+        saw_done = False
+        with client.stream("POST", f"{self.base_url}/api/chat", json=request_body) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line.strip():
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise ProviderError(
+                        "Ollama returned an invalid NDJSON chunk",
+                        category="invalid_stream_chunk",
+                    ) from error
+                text = chunk.get("message", {}).get("content", "")
+                if not isinstance(text, str):
+                    raise ProviderError(
+                        "Ollama stream chunk has invalid message.content",
+                        category="invalid_stream_chunk",
+                    )
+                total += len(text)
+                if total > limit:
+                    raise ProviderError(
+                        f"Ollama output exceeds the {limit}-character limit",
+                        category="output_limit",
+                    )
+                parts.append(text)
+                if chunk.get("done") is True:
+                    saw_done = True
+                    finish_reason = chunk.get("done_reason")
+                    break
+        if not saw_done:
+            raise ProviderError(
+                "Ollama stream ended before a done chunk",
+                category="truncated_stream",
+            )
+        return "".join(parts), finish_reason
+
+    def _non_stream_chat(
+        self, client: httpx.Client, request_body: dict[str, object], limit: int
+    ) -> tuple[str, str | None]:
+        response = client.post(f"{self.base_url}/api/chat", json=request_body)
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except ValueError as error:
+            raise ProviderError("Ollama returned invalid JSON", category="invalid_json") from error
+        content = payload.get("message", {}).get("content") if isinstance(payload, dict) else None
+        if not isinstance(content, str):
+            raise ProviderError(
+                "Ollama response has no message.content string", category="invalid_response"
+            )
+        if len(content) > limit:
+            raise ProviderError(
+                f"Ollama output exceeds the {limit}-character limit",
+                category="output_limit",
+            )
+        return content, payload.get("done_reason")
+
+    def generate(self, system_prompt: str, user_context: str, max_output_characters: int) -> str:
+        from ..models import ModelImplementationResponse
+
+        return self.chat(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_context},
+            ],
+            ModelImplementationResponse.model_json_schema(),
+            max_output_characters,
+        )
