@@ -4,6 +4,7 @@ services:
       context: .
     image: local-code-worker:latest
     container_name: local-code-worker-web
+    gpus: all
     command: ["web", "--host", "0.0.0.0", "--port", "8765", "--env-file", "/data/.env"]
     environment:
       WORKER_HOST_ROOT: "D:/OpenAIProjects"

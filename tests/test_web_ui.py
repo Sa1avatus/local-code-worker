@@ -20,3 +20,17 @@ def test_pull_prefers_manual_name_and_selects_downloaded_model() -> None:
     assert "pullModel.value.trim()||model.value" in INDEX_HTML
     assert "await models(requestedModel)" in INDEX_HTML
     assert "pullModel.value=''" in INDEX_HTML
+
+
+def test_runtime_status_uses_ollama_ps_and_polls_every_15_seconds() -> None:
+    assert 'id="runtime"' in INDEX_HTML
+    assert 'id="runtimeUpdated"' in INDEX_HTML
+    assert "'/api/runtime'" in INDEX_HTML
+    assert "window.setInterval(runtimeStatus,15000)" in INDEX_HTML
+
+
+def test_dashboard_requests_system_metrics_and_renders_cards() -> None:
+    assert 'id="metrics"' in INDEX_HTML
+    assert "'/api/system'" in INDEX_HTML
+    assert "renderMetrics(system)" in INDEX_HTML
+    assert "linear-gradient(90deg,var(--accent),var(--ok))" in INDEX_HTML

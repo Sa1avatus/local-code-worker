@@ -50,6 +50,37 @@ def test_ollama_tags_and_missing_model() -> None:
     assert health.model_available is False
 
 
+def test_ollama_running_models_returns_safe_runtime_fields() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/ps"
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "name": "qwen:test",
+                        "size": 12_000,
+                        "size_vram": 10_000,
+                        "context_length": 16_384,
+                        "expires_at": "2026-08-01T12:00:00Z",
+                        "digest": "must-not-be-exposed",
+                    }
+                ]
+            },
+        )
+
+    provider = OllamaProvider(ollama_settings(), httpx.MockTransport(handler))
+    assert provider.running_models() == [
+        {
+            "name": "qwen:test",
+            "size": 12_000,
+            "size_vram": 10_000,
+            "context_length": 16_384,
+            "expires_at": "2026-08-01T12:00:00Z",
+        }
+    ]
+
+
 def test_ollama_stream_collects_chunks_and_done_reason() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)

@@ -231,7 +231,7 @@ def _run_task_command(
         return 0
     state = inspect_repository(task)
     context, context_statistics = build_context(task)
-    system_prompt = load_system_prompt(worker_root)
+    system_prompt = load_system_prompt(worker_root, task.proposal_format)
     run_id = create_run_id(task.task_id)
     reports_directory = report_directory or settings.worker_reports_directory
     report_writer = RunReportWriter(state.root, reports_directory, run_id)

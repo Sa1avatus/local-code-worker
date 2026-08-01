@@ -171,7 +171,9 @@ def generate_implementation(
     ):
         return GenerationResult(parsed.status, None, tuple(attempts), parsed.error)
 
-    repair_prompt = build_repair_prompt(raw_response, parsed.error or "Unknown error", schema)
+    repair_prompt = build_repair_prompt(
+        raw_response, parsed.error or "Unknown error", schema, task.proposal_format
+    )
     repair_messages = [
         {
             "role": "system",
@@ -235,8 +237,18 @@ def generate_implementation(
 
 
 def build_repair_prompt(
-    previous_response: str, validation_error: str, schema: dict[str, object]
+    previous_response: str,
+    validation_error: str,
+    schema: dict[str, object],
+    proposal_format: ProposalFormat,
 ) -> str:
+    patch_instruction = ""
+    if proposal_format is ProposalFormat.PATCH:
+        patch_instruction = (
+            "Patch mode: do not return complete files. Each patches[].diff must start with "
+            "'@@ -old,count +new,count @@' and contain only hunk lines. Example for a new "
+            "file: '@@ -0,0 +1,2 @@\\n+first line\\n+second line\\n'."
+        )
     return "\n\n".join(
         [
             "Your previous response could not be accepted.",
@@ -244,6 +256,7 @@ def build_repair_prompt(
             "Return only one valid JSON object matching the supplied schema.",
             "Do not explain the error. Do not use Markdown. Do not add files. "
             "Do not change the intended implementation.",
+            patch_instruction,
             f"JSON SCHEMA:\n{json.dumps(schema, ensure_ascii=False, indent=2)}",
             f"PREVIOUS RESPONSE:\n{previous_response}",
         ]

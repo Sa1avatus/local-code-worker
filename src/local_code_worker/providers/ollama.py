@@ -67,6 +67,53 @@ class OllamaProvider:
             )
         return [model.get("name", "") for model in models if isinstance(model, dict)]
 
+    def running_models(self) -> list[dict[str, object]]:
+        """Return safe runtime placement details reported by Ollama's ``/api/ps``."""
+        url = f"{self.base_url}/api/ps"
+        try:
+            with self._client() as client:
+                response = client.get(url)
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.ConnectError as error:
+            raise ProviderError(
+                f"Cannot connect to Ollama at {url}", category="connection"
+            ) from error
+        except httpx.TimeoutException as error:
+            raise ProviderError(f"Ollama request timed out at {url}", category="timeout") from error
+        except httpx.TransportError as error:
+            raise ProviderError(
+                f"Ollama transport failed at {url}", category="transport_error"
+            ) from error
+        except httpx.HTTPStatusError as error:
+            raise ProviderError(
+                f"Ollama returned HTTP {error.response.status_code}", category="http_error"
+            ) from error
+        except (ValueError, TypeError) as error:
+            raise ProviderError(
+                "Ollama /api/ps returned invalid JSON", category="invalid_json"
+            ) from error
+
+        models = payload.get("models") if isinstance(payload, dict) else None
+        if not isinstance(models, list):
+            raise ProviderError(
+                "Ollama /api/ps response has no models array", category="invalid_json"
+            )
+        safe_models: list[dict[str, object]] = []
+        for model in models:
+            if not isinstance(model, dict) or not isinstance(model.get("name"), str):
+                continue
+            runtime: dict[str, object] = {"name": model["name"]}
+            for field in ("size", "size_vram", "context_length"):
+                value = model.get(field)
+                if isinstance(value, int) and value >= 0:
+                    runtime[field] = value
+            expires_at = model.get("expires_at")
+            if isinstance(expires_at, str):
+                runtime["expires_at"] = expires_at
+            safe_models.append(runtime)
+        return safe_models
+
     def check_connection(self) -> ProviderHealth:
         try:
             models = self.list_models()

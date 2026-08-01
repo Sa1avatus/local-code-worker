@@ -22,6 +22,12 @@ Ollama model through the native `/api/pull` streaming API. API keys are write-on
 the browser and are stored in the ignored `.env`; API responses never return their
 values. Switching to Ollama preserves a saved external-provider key.
 
+When Ollama is selected, the page also shows the currently loaded models and their
+reported VRAM allocation, GPU/CPU placement estimate, and active context length. This
+status is refreshed every 15 seconds through Ollama's local `/api/ps` endpoint.
+The same panel shows CPU and RAM usage, plus NVIDIA GPU usage, temperature, VRAM,
+power, and graphics clock when Docker Desktop exposes the GPU to the container.
+
 The web API rejects non-local browser `Host` and `Origin` values. To run the UI in
 Docker while reaching Ollama on the host, use `host.docker.internal` and publish the
 port only on loopback:

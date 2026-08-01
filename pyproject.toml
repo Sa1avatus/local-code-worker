@@ -12,6 +12,8 @@ dependencies = [
   "pydantic>=2.9,<3",
   "pydantic-settings>=2.5,<3",
   "python-dotenv>=1.0,<2",
+  "nvidia-ml-py>=12,<13",
+  "psutil>=6,<8",
 ]
 
 [project.optional-dependencies]

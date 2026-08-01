@@ -13,11 +13,13 @@ from local_code_worker.cli import (
 from local_code_worker.config import WorkerSettings
 from local_code_worker.exceptions import OllamaError, ProposalError
 from local_code_worker.execution import (
+    build_repair_prompt,
     build_request_metadata,
     generate_implementation,
     implementation_response_schema,
 )
-from local_code_worker.models import JsonMode, ResponseStatus, WorkerTask
+from local_code_worker.models import JsonMode, ProposalFormat, ResponseStatus, WorkerTask
+from local_code_worker.prompt_loader import load_system_prompt
 from local_code_worker.report_writer import RunReportWriter
 
 VALID_RESPONSE = json.dumps(
@@ -198,6 +200,22 @@ def test_repair_request_does_not_repeat_repository_context(tmp_path: Path) -> No
     repair_messages = client.calls[1][0]
     assert marker not in json.dumps(repair_messages)
     assert "JSON SCHEMA" in repair_messages[-1]["content"]
+
+
+def test_patch_repair_explains_hunk_format_and_forbids_complete_file() -> None:
+    prompt = build_repair_prompt("{}", "Missing unified diff hunk header", {}, ProposalFormat.PATCH)
+    assert "do not return complete files" in prompt
+    assert "@@ -old,count +new,count @@" in prompt
+    assert "@@ -0,0 +1,2 @@" in prompt
+
+
+def test_patch_system_prompt_requires_hunks_not_file_content() -> None:
+    worker_root = Path(__file__).resolve().parents[1]
+    prompt = load_system_prompt(worker_root, ProposalFormat.PATCH)
+    assert "patches[].diff" in prompt
+    assert "Never use files[].content" in prompt
+    assert "files[].content contains the complete final source text" not in prompt
+    assert "@@ -0,0 +1,2 @@" in prompt
 
 
 def test_prompt_only_initial_request_includes_response_schema(tmp_path: Path) -> None:
