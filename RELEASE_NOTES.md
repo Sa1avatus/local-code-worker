@@ -1,5 +1,20 @@
 # Release notes
 
+## Unreleased
+
+### Container workflow
+
+- Added a Docker Compose runtime that mounts the workspace at `/workspace` and preserves
+  provider configuration in the existing `local-code-worker-data` volume.
+- Added guarded Windows-host to container path mapping for task repository roots.
+- Added Git and development validation dependencies to the image so generation,
+  proposal application, Ruff, and pytest can all run inside the container.
+
+### Validation
+
+- `python -m ruff check src tests`
+- `python -m pytest tests -q` (`99 passed` on the host and in the container)
+
 ## 1.1.0
 
 ### User-visible changes

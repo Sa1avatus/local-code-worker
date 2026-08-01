@@ -28,14 +28,28 @@ port only on loopback:
 
 ```cmd
 docker build -t local-code-worker:latest .
-docker run --rm --name local-code-worker-web ^
-  -p 127.0.0.1:8765:8765 ^
-  -v local-code-worker-data:/data ^
-  local-code-worker:latest web --host 0.0.0.0 --port 8765 --env-file /data/.env
+docker compose up --build --detach
 ```
 
-The named volume keeps provider settings and API keys across container recreation. Do
-not publish port 8765 on a non-loopback host interface.
+Compose mounts `D:\OpenAIProjects` at `/workspace`, keeps provider settings and API keys
+in the `local-code-worker-data` volume, and publishes the UI only on loopback. Override
+the host workspace with `WORKSPACE_ROOT` when required. Do not publish port 8765 on a
+non-loopback host interface.
+
+All workspace projects use the same container through the root wrappers:
+
+```cmd
+D:\OpenAIProjects\scripts\start-local-worker-container.cmd
+D:\OpenAIProjects\scripts\check-local-llm.cmd
+D:\OpenAIProjects\scripts\validate-local-task.cmd D:\OpenAIProjects\tasks\current.json
+D:\OpenAIProjects\scripts\run-local-implementation.cmd D:\OpenAIProjects\tasks\current.json
+D:\OpenAIProjects\scripts\apply-local-proposal.cmd D:\OpenAIProjects\project\.local-worker\reports\RUN_ID
+```
+
+Task JSON keeps its normal Windows `repository_root`. Inside the container, the Worker
+maps only the configured `D:\OpenAIProjects` prefix to `/workspace`; paths outside that
+root fail closed. The model still receives only explicit `allowed_files` and
+`readonly_files`, never the mounted workspace or unrestricted shell access.
 
 ## Codex approval workflow
 

@@ -6,7 +6,10 @@ COPY pyproject.toml .
 COPY src/ src/
 COPY prompts/ prompts/
 
-RUN pip install --no-cache-dir . \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir ".[dev]" \
     && useradd --create-home worker \
     && mkdir /data \
     && chown worker:worker /data

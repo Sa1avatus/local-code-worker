@@ -1,0 +1,30 @@
+services:
+  worker:
+    build:
+      context: .
+    image: local-code-worker:latest
+    container_name: local-code-worker-web
+    command: ["web", "--host", "0.0.0.0", "--port", "8765", "--env-file", "/data/.env"]
+    environment:
+      WORKER_HOST_ROOT: "D:/OpenAIProjects"
+      WORKER_CONTAINER_ROOT: "/workspace"
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: "safe.directory"
+      GIT_CONFIG_VALUE_0: "/workspace/*"
+      GIT_CONFIG_KEY_1: "core.autocrlf"
+      GIT_CONFIG_VALUE_1: "true"
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - type: volume
+        source: worker-data
+        target: /data
+      - type: bind
+        source: ${WORKSPACE_ROOT:-D:/OpenAIProjects}
+        target: /workspace
+    restart: unless-stopped
+
+volumes:
+  worker-data:
+    name: local-code-worker-data
+    external: true

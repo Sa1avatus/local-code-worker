@@ -20,6 +20,7 @@ def valid_task_payload(repository_root: Path) -> dict:
 
 
 def write_task(path: Path, payload: dict) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
@@ -49,3 +50,48 @@ def test_load_task_rejects_parent_traversal(tmp_path: Path) -> None:
     payload["allowed_files"] = ["../outside.py"]
     with pytest.raises(TaskValidationError, match="traversal"):
         load_task(write_task(tmp_path / "task.json", payload))
+
+
+def test_load_task_maps_configured_windows_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host_workspace = "D:/OpenAIProjects"
+    container_workspace = tmp_path / "workspace"
+    repository = container_workspace / "project"
+    repository.mkdir(parents=True)
+    payload = valid_task_payload(Path("D:/OpenAIProjects/project"))
+    task_path = write_task(container_workspace / "tasks" / "task.json", payload)
+    monkeypatch.setenv("WORKER_HOST_ROOT", host_workspace)
+    monkeypatch.setenv("WORKER_CONTAINER_ROOT", str(container_workspace))
+
+    task = load_task(task_path)
+
+    assert task.repository_root == repository.resolve()
+
+
+def test_load_task_rejects_repository_outside_mapped_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container_workspace = tmp_path / "workspace"
+    container_workspace.mkdir()
+    payload = valid_task_payload(Path("C:/Other/project"))
+    task_path = write_task(container_workspace / "tasks" / "task.json", payload)
+    monkeypatch.setenv("WORKER_HOST_ROOT", "D:/OpenAIProjects")
+    monkeypatch.setenv("WORKER_CONTAINER_ROOT", str(container_workspace))
+
+    with pytest.raises(TaskValidationError, match="configured host workspace"):
+        load_task(task_path)
+
+
+def test_load_task_requires_complete_path_mapping_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_path = write_task(tmp_path / "task.json", valid_task_payload(tmp_path))
+    monkeypatch.setenv("WORKER_HOST_ROOT", "D:/OpenAIProjects")
+    monkeypatch.delenv("WORKER_CONTAINER_ROOT", raising=False)
+
+    with pytest.raises(TaskValidationError, match="configured together"):
+        load_task(task_path)
