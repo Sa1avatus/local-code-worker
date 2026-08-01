@@ -17,6 +17,8 @@
   materializes and validates complete files locally before the existing approval workflow.
 - Fixed the patch-proposal protocol: patch tasks now receive a hunk-only prompt and example,
   accept safe diff wrappers and new-file `@@ -0,0` hunks, and provide actionable repair guidance.
+- Fixed proposal application reports for newly created files: allowed untracked files are now
+  recorded as `new file` diffs without staging them.
 - Added a live Ollama runtime panel in the web UI. It refreshes every 15 seconds and
   shows loaded-model VRAM allocation, estimated GPU/CPU placement, and context length.
 - Expanded the panel with CPU/RAM cards and NVIDIA GPU utilization, temperature, VRAM,

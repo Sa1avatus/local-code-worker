@@ -5,7 +5,11 @@ import pytest
 
 from local_code_worker.exceptions import RepositoryError, TaskValidationError
 from local_code_worker.models import WorkerTask
-from local_code_worker.repository import inspect_repository, resolve_repository_file
+from local_code_worker.repository import (
+    get_allowed_diff,
+    inspect_repository,
+    resolve_repository_file,
+)
 
 
 def run_git(root: Path, *arguments: str) -> None:
@@ -56,6 +60,26 @@ def test_inspect_repository_blocks_dirty_allowed_file(tmp_path: Path) -> None:
     (root / "src" / "service.py").write_text("VALUE = 2\n", encoding="utf-8")
     with pytest.raises(RepositoryError, match="uncommitted"):
         inspect_repository(create_task(root))
+
+
+def test_allowed_diff_includes_created_untracked_file(tmp_path: Path) -> None:
+    root = create_repository(tmp_path)
+    task = WorkerTask(
+        task_id="created-file",
+        title="Created file",
+        goal="Create a file",
+        repository_root=root,
+        allowed_files=[Path("src/created.py")],
+        requirements=["Create file"],
+        acceptance_criteria=["File exists"],
+    )
+    state = inspect_repository(task)
+    (root / "src" / "created.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    diff = get_allowed_diff(state, task.allowed_files)
+
+    assert "new file mode" in diff
+    assert "+VALUE = 1" in diff
 
 
 def test_resolve_repository_file_rejects_path_outside_root(tmp_path: Path) -> None:
