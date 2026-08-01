@@ -9,6 +9,8 @@
 - Added provider model discovery and streamed Ollama model downloads with progress.
 - Added the `web` CLI command and a Docker image that serves the UI on port 8765 as a
   non-root user with persistent configuration in `/data`.
+- Expanded the README with native Ollama installation, model-directory configuration,
+  recommended coding-model downloads, API checks, and Docker connectivity guidance.
 
 ### Important fixes and security
 

@@ -82,6 +82,94 @@ Git-команды Worker фиксированы: `status --porcelain`, `rev-par
 
 Требуются Python 3.11+, Git, PowerShell и запущенная Ollama с `qwen2.5-coder:3b` по умолчанию.
 
+### Установка Ollama
+
+#### Windows
+
+1. Скачайте официальный установщик `OllamaSetup.exe` со страницы
+   [Ollama for Windows](https://ollama.com/download/windows) и запустите его. Установка
+   выполняется в профиль текущего пользователя и обычно не требует прав администратора.
+2. Полностью закройте и заново откройте PowerShell или CMD, чтобы терминал получил
+   обновлённый `PATH`.
+3. Проверьте установку и локальный API:
+
+```powershell
+ollama --version
+Invoke-RestMethod http://127.0.0.1:11434/api/tags
+```
+
+Ollama запускается как фоновое приложение и предоставляет API на
+`http://localhost:11434`. Если команда установлена, но API недоступен, запустите Ollama
+из меню «Пуск» и проверьте значок приложения в системном трее.
+
+По умолчанию модели хранятся в `%USERPROFILE%\.ollama\models`. Чтобы сохранять их на
+диске `D:`, выполните:
+
+```powershell
+New-Item -ItemType Directory -Path "D:\OllamaModels" -Force
+[Environment]::SetEnvironmentVariable("OLLAMA_MODELS", "D:\OllamaModels", "User")
+```
+
+После изменения `OLLAMA_MODELS` завершите Ollama через значок в трее и запустите её
+снова. Новое окно PowerShell должно вывести выбранный путь:
+
+```powershell
+[Environment]::GetEnvironmentVariable("OLLAMA_MODELS", "User")
+```
+
+#### macOS и Linux
+
+На macOS установите приложение с [официальной страницы загрузки](https://ollama.com/download).
+На Linux используйте официальный установочный скрипт:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama serve
+```
+
+Инструкции и варианты ручной установки доступны в документации
+[Ollama for Linux](https://docs.ollama.com/linux).
+
+### Установка модели
+
+Базовая модель из конфигурации по умолчанию:
+
+```powershell
+ollama pull qwen2.5-coder:3b
+```
+
+Рекомендуемая модель для видеокарты с 12 ГБ VRAM:
+
+```powershell
+ollama pull qwen2.5-coder:14b-instruct-q4_K_M
+```
+
+14B-квант занимает около 9 ГБ; оставляйте контекст в диапазоне 4096–8192 токенов,
+чтобы сохранить место под KV-кэш. Более быстрый вариант с большим запасом VRAM:
+
+```powershell
+ollama pull qwen2.5-coder:7b-instruct-q5_K_M
+```
+
+Проверка установленных моделей:
+
+```powershell
+ollama list
+```
+
+В локальном запуске Worker используйте `http://localhost:11434`. Если Worker запущен в
+Docker, `localhost` указывает на сам контейнер, поэтому в web-интерфейсе задайте:
+
+```text
+http://host.docker.internal:11434
+```
+
+После этого нажмите «Сохранить и проверить», затем «Обновить модели». Кнопка «Скачать
+модель» использует Ollama `/api/pull` и сохраняет модель в каталог, настроенный самой
+Ollama, а не внутрь контейнера Worker.
+
+### Установка Local Code Worker
+
 ```powershell
 cd local-code-worker
 Copy-Item .env.example .env
