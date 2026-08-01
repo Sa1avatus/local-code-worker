@@ -9,11 +9,13 @@
 - Added guarded Windows-host to container path mapping for task repository roots.
 - Added Git and development validation dependencies to the image so generation,
   proposal application, Ruff, and pytest can all run inside the container.
+- Replaced the browser-dependent model datalist with a native model dropdown and a
+  separate manual Ollama download field, including automatic selection after download.
 
 ### Validation
 
 - `python -m ruff check src tests`
-- `python -m pytest tests -q` (`99 passed` on the host and in the container)
+- `python -m pytest tests -q` (`102 passed` in the container)
 
 ## 1.1.0
 
