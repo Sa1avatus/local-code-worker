@@ -22,9 +22,15 @@ services:
       - type: bind
         source: ${WORKSPACE_ROOT:-D:/OpenAIProjects}
         target: /workspace
+    networks:
+      - worker-network
     restart: unless-stopped
 
 volumes:
   worker-data:
     name: local-code-worker-data
     external: true
+
+networks:
+  worker-network:
+    name: local-code-worker-network

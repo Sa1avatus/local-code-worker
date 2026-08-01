@@ -6,8 +6,11 @@ from pathlib import Path
 
 from .exceptions import OllamaError, PatchValidationError, ProviderError, SemanticValidationError
 from .models import (
+    GeneratedFile,
     JsonMode,
     ModelImplementationResponse,
+    PatchImplementationResponse,
+    ProposalFormat,
     ProviderName,
     RequestMetadata,
     ResponseAttempt,
@@ -19,6 +22,7 @@ from .providers.base import LlmProvider
 from .report_writer import RunReportWriter
 from .repository import normalize_relative_path
 from .response_parser import ParsedResponse, classify_model_response
+from .unified_diff import apply_unified_hunks
 
 
 @dataclass(frozen=True)
@@ -30,9 +34,16 @@ class GenerationResult:
 
 
 def implementation_response_schema(task: WorkerTask) -> dict[str, object]:
-    schema = ModelImplementationResponse.model_json_schema()
+    response_type = (
+        PatchImplementationResponse
+        if task.proposal_format is ProposalFormat.PATCH
+        else ModelImplementationResponse
+    )
+    schema = response_type.model_json_schema()
     definitions = schema.get("$defs", {})
-    generated_file_schema = definitions.get("GeneratedFile")
+    generated_file_schema = definitions.get(
+        "GeneratedPatch" if task.proposal_format is ProposalFormat.PATCH else "GeneratedFile"
+    )
     if isinstance(generated_file_schema, dict):
         properties = generated_file_schema.get("properties")
         if isinstance(properties, dict) and isinstance(properties.get("path"), dict):
@@ -244,7 +255,26 @@ def _validate_attempt(task: WorkerTask, task_path: Path, raw_response: str) -> P
     if parsed.response is None:
         return parsed
     try:
-        validated = validate_generated_changes(task, parsed.response, task_path)
+        response = parsed.response
+        if isinstance(response, PatchImplementationResponse):
+            files = []
+            for patch in response.patches:
+                target = task.repository_root / patch.path
+                original = target.read_text(encoding="utf-8") if target.exists() else ""
+                files.append(
+                    GeneratedFile(
+                        path=patch.path,
+                        content=apply_unified_hunks(original, patch.diff, patch.path.as_posix()),
+                        reason=patch.reason,
+                    )
+                )
+            response = ModelImplementationResponse(
+                summary=response.summary,
+                files=files,
+                assumptions=response.assumptions,
+                warnings=response.warnings,
+            )
+        validated = validate_generated_changes(task, response, task_path)
     except SemanticValidationError as error:
         status = (
             ResponseStatus.PLACEHOLDER_CONTENT

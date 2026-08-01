@@ -51,6 +51,23 @@ maps only the configured `D:\OpenAIProjects` prefix to `/workspace`; paths outsi
 root fail closed. The model still receives only explicit `allowed_files` and
 `readonly_files`, never the mounted workspace or unrestricted shell access.
 
+### OpenAI-compatible container API
+
+The web container exposes the configured provider through an OpenAI-compatible API:
+
+```text
+GET  http://localhost:8765/v1/models
+POST http://localhost:8765/v1/chat/completions
+```
+
+Use `http://localhost:8765/v1` from the Windows host. A container attached to the
+shared named network `local-code-worker-network` can use
+`http://local-code-worker-web:8765/v1`. Local access requires no API key; clients that
+require one may use any non-empty placeholder such as `local-worker`. Chat completions
+support normal responses and the OpenAI SSE shape for `stream=true`; generation is
+performed by the provider and model selected in the UI unless the request supplies a
+different model name.
+
 ## Codex approval workflow
 
 When Codex launches the Worker, use the two-phase mode:
@@ -64,6 +81,15 @@ This generates and validates the response, stores `proposal.json` and
 `proposal-metadata.json` in the run report, prints the proposed file list, and exits with
 `awaiting_approval`. It never opens the terminal confirmation prompt and does not change
 implementation files.
+
+### Patch proposals
+
+Tasks use `"proposal_format": "patch"` by default. The model returns compact,
+headerless unified-diff hunks for each allowlisted file instead of the entire file.
+The Worker applies those hunks locally in memory, validates the resulting complete files
+with the existing path, syntax, semantic, backup, approval, and validation-command
+checks, and only then saves the normal reviewed `proposal.json`. Set
+`"proposal_format": "files"` only when a complete replacement file is genuinely needed.
 
 After the user approves the proposal in Codex, apply that exact saved proposal:
 

@@ -204,16 +204,36 @@ def test_prompt_only_initial_request_includes_response_schema(tmp_path: Path) ->
     _, client, _ = run_generation(tmp_path, [VALID_RESPONSE])
     system_message = client.calls[0][0][0]["content"]
     assert "The API will not enforce the response format" in system_message
-    assert "ModelImplementationResponse" in system_message
+    assert "PatchImplementationResponse" in system_message
     assert '"src/a.py"' in system_message
 
 
 def test_schema_restricts_paths_and_additional_properties(tmp_path: Path) -> None:
     schema = implementation_response_schema(create_task(tmp_path))
     assert schema["additionalProperties"] is False
-    generated_file = schema["$defs"]["GeneratedFile"]
+    generated_file = schema["$defs"]["GeneratedPatch"]
     assert generated_file["additionalProperties"] is False
     assert generated_file["properties"]["path"]["enum"] == ["src/a.py"]
+
+
+def test_patch_response_is_materialized_before_file_validation(tmp_path: Path) -> None:
+    patch_response = json.dumps(
+        {
+            "summary": "Update one line",
+            "patches": [
+                {
+                    "path": "src/a.py",
+                    "diff": "@@ -1 +1 @@\n-VALUE = 1\n+VALUE = 2\n",
+                    "reason": "Task",
+                }
+            ],
+        }
+    )
+    result, _, _ = run_generation(tmp_path, [patch_response], max_repair_attempts=0)
+
+    assert result.status is ResponseStatus.VALID
+    assert result.response is not None
+    assert result.response.files[0].content == "VALUE = 2\n"
 
 
 def test_cli_creates_report_when_model_response_is_invalid(

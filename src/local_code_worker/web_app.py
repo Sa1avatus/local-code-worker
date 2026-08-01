@@ -1,6 +1,8 @@
 # ruff: noqa: E501
 
 import json
+import time
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import chain
@@ -12,7 +14,7 @@ from pydantic import ValidationError
 
 from .config import WorkerSettings
 from .exceptions import ProviderError, WorkerError
-from .models import ProviderName
+from .models import JsonMode, ProviderName
 from .providers import create_provider
 from .providers.ollama import OllamaProvider
 from .web_config import (
@@ -24,7 +26,13 @@ from .web_config import (
 from .web_models import ProviderSettingsInput, validate_model_name
 
 MAX_REQUEST_BYTES = 64 * 1024
-LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+LOCAL_HOSTS = {
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "host.docker.internal",
+    "local-code-worker-web",
+}
 
 INDEX_HTML = r'''<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -88,6 +96,133 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
     def _settings(self) -> WorkerSettings:
         return load_web_worker_settings(self.env_path)
 
+    def _openai_models(self) -> None:
+        names = create_provider(self._settings()).list_models()
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "object": "list",
+                "data": [
+                    {"id": name, "object": "model", "created": 0, "owned_by": "local"}
+                    for name in names
+                    if name
+                ],
+            },
+        )
+
+    def _chat_request(self) -> tuple[WorkerSettings, list[dict[str, str]], bool]:
+        payload = self._read_json()
+        raw_messages = payload.get("messages")
+        if not isinstance(raw_messages, list) or not raw_messages:
+            raise ValueError("messages must be a non-empty array")
+        messages: list[dict[str, str]] = []
+        for raw_message in raw_messages:
+            if not isinstance(raw_message, dict):
+                raise ValueError("each message must be an object")
+            role = raw_message.get("role")
+            content = raw_message.get("content")
+            if role not in {"system", "user", "assistant", "tool"}:
+                raise ValueError("message role is unsupported")
+            if not isinstance(content, str):
+                raise ValueError("message content must be a string")
+            messages.append({"role": role, "content": content})
+
+        settings = self._settings()
+        model = validate_model_name(str(payload.get("model") or settings.llm_model))
+        updates: dict[str, object] = {"llm_model": model, "llm_stream": False}
+        temperature = payload.get("temperature")
+        if temperature is not None:
+            if not isinstance(temperature, (int, float)) or isinstance(temperature, bool):
+                raise ValueError("temperature must be a non-negative number")
+            if temperature < 0:
+                raise ValueError("temperature must be a non-negative number")
+            updates["llm_temperature"] = float(temperature)
+        max_tokens = payload.get("max_tokens")
+        if max_tokens is not None:
+            if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
+                raise ValueError("max_tokens must be a positive integer")
+            updates["llm_max_output_characters"] = min(
+                settings.llm_max_output_characters, max_tokens * 8
+            )
+        response_format = payload.get("response_format")
+        if response_format is not None:
+            if not isinstance(response_format, dict):
+                raise ValueError("response_format must be an object")
+            response_type = response_format.get("type")
+            if response_type == "json_object":
+                updates["llm_json_mode"] = JsonMode.JSON_OBJECT
+            elif response_type not in {None, "text"}:
+                raise ValueError("only text and json_object response formats are supported")
+        stream = payload.get("stream", False)
+        if not isinstance(stream, bool):
+            raise ValueError("stream must be a boolean")
+        return settings.model_copy(update=updates), messages, stream
+
+    def _chat_completion(self) -> None:
+        settings, messages, stream = self._chat_request()
+        provider = create_provider(settings)
+        content = provider.chat(messages, None, settings.llm_max_output_characters)
+        metadata = provider.last_generation_metadata
+        completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+        created = int(time.time())
+        finish_reason = metadata.finish_reason if metadata and metadata.finish_reason else "stop"
+        usage = metadata.usage if metadata else {}
+        normalized_usage = {
+            "prompt_tokens": int(usage.get("prompt_tokens", 0)),
+            "completion_tokens": int(usage.get("completion_tokens", 0)),
+            "total_tokens": int(usage.get("total_tokens", 0)),
+        }
+        if stream:
+            chunks = [
+                {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": settings.llm_model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": content},
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": settings.llm_model,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                },
+            ]
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            for chunk in chunks:
+                self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            return
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "id": completion_id,
+                "object": "chat.completion",
+                "created": created,
+                "model": settings.llm_model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": finish_reason,
+                    }
+                ],
+                "usage": normalized_usage,
+            },
+        )
+
     def do_GET(self) -> None:
         if self.path == "/":
             body = INDEX_HTML.encode("utf-8")
@@ -113,6 +248,9 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 health = create_provider(self._settings()).check_connection()
                 self._send_json(HTTPStatus.OK, health.model_dump())
                 return
+            if self.path == "/v1/models":
+                self._openai_models()
+                return
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
         except (ProviderError, WorkerError, ValidationError, ValueError, OSError) as error:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
@@ -137,6 +275,15 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         response_started = False
         if not self._local_request():
             self._send_json(HTTPStatus.FORBIDDEN, {"error": "Local requests only"})
+            return
+        if self.path == "/v1/chat/completions":
+            try:
+                self._chat_completion()
+            except (ProviderError, WorkerError, ValidationError, ValueError, OSError) as error:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": {"message": str(error), "type": "invalid_request_error"}},
+                )
             return
         if self.path != "/api/ollama/pull":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})

@@ -13,6 +13,11 @@ class InterfaceRequirement(StrictModel):
     signature: str
 
 
+class ProposalFormat(StrEnum):
+    PATCH = "patch"
+    FILES = "files"
+
+
 class WorkerTask(StrictModel):
     task_id: str
     title: str
@@ -26,6 +31,7 @@ class WorkerTask(StrictModel):
     validation_commands: list[list[str]] = Field(default_factory=list)
     max_context_characters: int = Field(default=50_000, gt=0)
     max_output_characters: int = Field(default=100_000, gt=0)
+    proposal_format: ProposalFormat = ProposalFormat.PATCH
 
     @field_validator("task_id")
     @classmethod
@@ -67,6 +73,19 @@ class GeneratedFile(StrictModel):
 class ModelImplementationResponse(StrictModel):
     summary: str
     files: list[GeneratedFile] = Field(min_length=1)
+    assumptions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class GeneratedPatch(StrictModel):
+    path: Path
+    diff: str
+    reason: str
+
+
+class PatchImplementationResponse(StrictModel):
+    summary: str
+    patches: list[GeneratedPatch] = Field(min_length=1)
     assumptions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 

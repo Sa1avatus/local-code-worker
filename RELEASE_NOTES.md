@@ -11,11 +11,15 @@
   proposal application, Ruff, and pytest can all run inside the container.
 - Replaced the browser-dependent model datalist with a native model dropdown and a
   separate manual Ollama download field, including automatic selection after download.
+- Added local OpenAI-compatible `/v1/models` and `/v1/chat/completions` endpoints to the
+  Worker container, plus a named Docker network for container-to-container clients.
+- Added compact patch proposals: the model can return unified-diff hunks, while the Worker
+  materializes and validates complete files locally before the existing approval workflow.
 
 ### Validation
 
 - `python -m ruff check src tests`
-- `python -m pytest tests -q` (`102 passed` in the container)
+- `python -m pytest tests -q` (`106 passed` in the container)
 
 ## 1.1.0
 
