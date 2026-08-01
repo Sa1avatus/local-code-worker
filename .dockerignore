@@ -1,0 +1,10 @@
+.env
+.env.*
+.git
+.venv
+.local-worker
+tests/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+tasks/

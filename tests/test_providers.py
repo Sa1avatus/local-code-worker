@@ -338,3 +338,82 @@ def test_provider_check_output_does_not_contain_api_key(
     assert provider_check(settings) == 0
     output = capsys.readouterr().out
     assert "secret-value" not in output
+
+
+def test_ollama_pull_model_streams_progress_and_success() -> None:
+    handler_called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal handler_called
+        handler_called = True
+        assert request.url.path == "/api/pull"
+        body = json.loads(request.content)
+        assert body["name"] == "qwen:test"
+        assert body["stream"] is True
+        return httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    '{"status": "pulling manifest"}',
+                    "",
+                    '{"status": "success"}',
+                ]
+            ),
+        )
+
+    provider = OllamaProvider(ollama_settings(), httpx.MockTransport(handler))
+    chunks = list(provider.pull_model("qwen:test"))
+    assert handler_called is True
+    assert chunks == [
+        {"status": "pulling manifest"},
+        {"status": "success"},
+    ]
+
+
+@pytest.mark.parametrize("name", ["", "   ", "foo\nbar"])
+def test_ollama_pull_model_rejects_invalid_names(name: str) -> None:
+    handler_called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal handler_called
+        handler_called = True
+        return httpx.Response(200, text="")
+
+    provider = OllamaProvider(ollama_settings(), httpx.MockTransport(handler))
+    with pytest.raises(ValueError):
+        list(provider.pull_model(name))
+    assert handler_called is False
+
+
+@pytest.mark.parametrize(
+    ("payload", "category"),
+    [
+        ("not-json\n", "invalid_stream_chunk"),
+        ("[]\n", "invalid_stream_chunk"),
+        ('{"status":"pulling"}\n', "truncated_stream"),
+    ],
+)
+def test_ollama_pull_model_rejects_invalid_or_truncated_stream(
+    payload: str,
+    category: str,
+) -> None:
+    provider = OllamaProvider(
+        ollama_settings(),
+        httpx.MockTransport(lambda request: httpx.Response(200, text=payload)),
+    )
+    with pytest.raises(ProviderError) as captured:
+        list(provider.pull_model("qwen:test"))
+    assert captured.value.category == category
+
+
+def test_ollama_pull_model_http_error_does_not_expose_body() -> None:
+    provider = OllamaProvider(
+        ollama_settings(),
+        httpx.MockTransport(
+            lambda request: httpx.Response(500, text="SENSITIVE-RESPONSE-BODY")
+        ),
+    )
+    with pytest.raises(ProviderError) as captured:
+        list(provider.pull_model("qwen:test"))
+    assert captured.value.category == "http_error"
+    assert "SENSITIVE-RESPONSE-BODY" not in str(captured.value)

@@ -99,6 +99,10 @@ def create_parser() -> argparse.ArgumentParser:
             )
     apply_parser = subparsers.add_parser("apply-proposal")
     apply_parser.add_argument("--report", required=True, type=Path)
+    web_parser = subparsers.add_parser("web")
+    web_parser.add_argument("--host", default="127.0.0.1")
+    web_parser.add_argument("--port", type=int, default=8765)
+    web_parser.add_argument("--env-file", type=Path, default=Path(".env"))
     return parser
 
 
@@ -449,6 +453,10 @@ def main(arguments: list[str] | None = None) -> int:
             return validate_task_command(parsed.task)
         if parsed.command == "build-context":
             return build_context_command(parsed.task)
+        if parsed.command == "web":
+            from .web_app import run_web_server
+
+            return run_web_server(parsed.host, parsed.port, parsed.env_file)
         settings = settings_from_arguments(parsed)
         if parsed.command == "apply-proposal":
             return apply_proposal_command(parsed.report, settings)

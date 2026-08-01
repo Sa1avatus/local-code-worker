@@ -8,6 +8,35 @@
 Every `run` prints its UTC start time immediately and always prints the UTC finish time
 and total wall-clock duration. The same duration in seconds is stored in `report.json`.
 
+## Local web interface
+
+Run the provider and model settings UI locally:
+
+```cmd
+.venv\Scripts\python.exe -m local_code_worker web --host 127.0.0.1 --port 8765
+```
+
+Open `http://127.0.0.1:8765`. The UI can select Ollama or any OpenAI-compatible
+endpoint, save or explicitly remove an API key, list provider models, and install an
+Ollama model through the native `/api/pull` streaming API. API keys are write-only in
+the browser and are stored in the ignored `.env`; API responses never return their
+values. Switching to Ollama preserves a saved external-provider key.
+
+The web API rejects non-local browser `Host` and `Origin` values. To run the UI in
+Docker while reaching Ollama on the host, use `host.docker.internal` and publish the
+port only on loopback:
+
+```cmd
+docker build -t local-code-worker:latest .
+docker run --rm --name local-code-worker-web ^
+  -p 127.0.0.1:8765:8765 ^
+  -v local-code-worker-data:/data ^
+  local-code-worker:latest web --host 0.0.0.0 --port 8765 --env-file /data/.env
+```
+
+The named volume keeps provider settings and API keys across container recreation. Do
+not publish port 8765 on a non-loopback host interface.
+
 ## Codex approval workflow
 
 When Codex launches the Worker, use the two-phase mode:

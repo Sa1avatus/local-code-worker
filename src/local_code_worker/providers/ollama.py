@@ -1,5 +1,6 @@
 import json
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from urllib.parse import urlsplit, urlunsplit
 
@@ -87,6 +88,63 @@ class OllamaProvider:
             model_available=available,
             details="Model is installed" if available else "Configured model is not installed",
         )
+
+    def pull_model(self, model: str) -> Iterator[dict[str, object]]:
+        validated = model.strip()
+        if not validated:
+            raise ValueError("Model name must not be empty")
+        for char in validated:
+            if ord(char) < 32 or ord(char) == 127:
+                raise ValueError("Model name contains invalid control character")
+
+        try:
+            with self._client() as client:
+                with client.stream(
+                    "POST",
+                    f"{self.base_url}/api/pull",
+                    json={"name": validated, "stream": True},
+                ) as response:
+                    response.raise_for_status()
+                    success_seen = False
+                    for line in response.iter_lines():
+                        if not line.strip():
+                            continue
+                        try:
+                            chunk = json.loads(line)
+                        except json.JSONDecodeError as error:
+                            raise ProviderError(
+                                "Ollama pull returned an invalid NDJSON chunk",
+                                category="invalid_stream_chunk",
+                            ) from error
+                        if not isinstance(chunk, dict):
+                            raise ProviderError(
+                                "Ollama pull chunk is not a dict",
+                                category="invalid_stream_chunk",
+                            )
+                        yield chunk
+                        if chunk.get("status") == "success":
+                            success_seen = True
+                            break
+                    if not success_seen:
+                        raise ProviderError(
+                            "Ollama pull stream ended before a success status",
+                            category="truncated_stream",
+                        )
+        except httpx.ConnectError as error:
+            raise ProviderError(
+                f"Cannot connect to Ollama at {self.base_url}", category="connection"
+            ) from error
+        except httpx.TimeoutException as error:
+            raise ProviderError("Ollama request timed out", category="timeout") from error
+        except httpx.TransportError as error:
+            raise ProviderError(
+                "Ollama transport failed",
+                category="transport_error",
+            ) from error
+        except httpx.HTTPStatusError as error:
+            raise ProviderError(
+                f"Ollama returned HTTP {error.response.status_code}", category="http_error"
+            ) from error
 
     def chat(
         self,

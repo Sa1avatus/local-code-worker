@@ -58,6 +58,7 @@ class WorkerSettings(BaseSettings):
             "localhost",
             "127.0.0.1",
             "::1",
+            "host.docker.internal",
         }:
             raise ValueError("Ollama LLM_BASE_URL must use a loopback host")
         return self
@@ -85,7 +86,7 @@ class WorkerSettings(BaseSettings):
     def validate_local_ollama_url(cls, url: HttpUrl | None) -> HttpUrl | None:
         if url is None:
             return None
-        if url.host not in {"localhost", "127.0.0.1", "::1"}:
+        if url.host not in {"localhost", "127.0.0.1", "::1", "host.docker.internal"}:
             raise ValueError("OLLAMA_BASE_URL must use a loopback host")
         return url
 
