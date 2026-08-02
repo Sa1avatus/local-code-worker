@@ -1,6 +1,14 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, HttpUrl, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from .models import ProviderName
 
@@ -20,6 +28,7 @@ class ProviderSettingsInput(BaseModel):
     provider: ProviderName
     base_url: HttpUrl
     model: str
+    context_length: int = Field(ge=512, le=131_072)
     api_key_action: Literal["keep", "replace", "clear"] = "keep"
     api_key: SecretStr | None = None
 

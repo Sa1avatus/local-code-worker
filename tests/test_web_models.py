@@ -16,6 +16,7 @@ def input_settings(**overrides: object) -> ProviderSettingsInput:
         "provider": "ollama",
         "base_url": "http://localhost:11434",
         "model": "qwen:test",
+        "context_length": 8192,
     }
     values.update(overrides)
     return ProviderSettingsInput.model_validate(values)
@@ -91,8 +92,14 @@ def test_save_provider_settings_persists_key_without_returning_it(tmp_path: Path
     public = load_public_settings(env_path)
     assert public["provider"] == "openai-compatible"
     assert public["model"] == "vendor/model"
+    assert public["context_length"] == 8192
     assert public["api_key_configured"] is True
     assert sentinel not in str(public)
+
+
+def test_context_length_must_be_within_safe_bounds() -> None:
+    with pytest.raises(ValueError):
+        input_settings(context_length=256)
 
 
 def test_save_provider_settings_clears_web_key(tmp_path: Path) -> None:

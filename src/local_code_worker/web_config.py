@@ -20,6 +20,7 @@ def public_settings(settings: WorkerSettings) -> dict[str, object]:
         "provider": settings.llm_provider.value,
         "base_url": str(settings.llm_base_url),
         "model": settings.llm_model,
+        "context_length": settings.llm_num_ctx,
         "api_key_configured": bool(api_key),
         "api_key_env": api_key_env,
     }
@@ -52,6 +53,7 @@ def initialize_container_settings(env_path: Path) -> None:
                 "provider": "ollama",
                 "base_url": "http://host.docker.internal:11434",
                 "model": "qwen2.5-coder:3b",
+                "context_length": 16_384,
             }
         ),
         env_path,
@@ -68,6 +70,7 @@ def save_provider_settings(
     set_key(path, "LLM_PROVIDER", value.provider.value)
     set_key(path, "LLM_BASE_URL", str(value.base_url).rstrip("/"))
     set_key(path, "LLM_MODEL", value.model)
+    set_key(path, "LLM_NUM_CTX", str(value.context_length))
 
     if value.api_key_action == "clear":
         unset_key(path, "LLM_API_KEY")
@@ -93,6 +96,7 @@ def save_provider_settings(
         "provider": value.provider.value,
         "base_url": str(value.base_url).rstrip("/"),
         "model": value.model,
+        "context_length": value.context_length,
         "api_key_configured": api_key_configured,
         "api_key_env": api_key_env,
     }

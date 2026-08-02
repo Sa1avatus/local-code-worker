@@ -6,6 +6,7 @@ def test_model_picker_uses_native_select_and_separate_pull_input() -> None:
     assert '<input id="pullModel"' in INDEX_HTML
     assert '<datalist id="models">' not in INDEX_HTML
     assert 'list="models"' not in INDEX_HTML
+    assert 'id="contextLength"' in INDEX_HTML
 
 
 def test_discovered_models_are_safe_options_and_preserve_selection() -> None:
@@ -36,3 +37,9 @@ def test_dashboard_requests_system_metrics_and_renders_cards() -> None:
     assert "'/api/system'" in INDEX_HTML
     assert "renderMetrics(system)" in INDEX_HTML
     assert "linear-gradient(90deg,var(--accent),var(--ok))" in INDEX_HTML
+
+
+def test_context_length_is_loaded_saved_and_requires_model_reload() -> None:
+    assert "contextLength.value=data.context_length" in INDEX_HTML
+    assert "context_length:Number(contextLength.value)" in INDEX_HTML
+    assert "ollama stop" in INDEX_HTML
