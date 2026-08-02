@@ -14,6 +14,8 @@ def test_discovered_models_are_safe_options_and_preserve_selection() -> None:
     assert "model.replaceChildren()" in INDEX_HTML
     assert "if(preferredModel&&!names.includes(preferredModel))" in INDEX_HTML
     assert "await models(data.model||'')" in INDEX_HTML
+    assert "preferredModel=typeof preferredModel==='string'?preferredModel:''" in INDEX_HTML
+    assert "$('refresh').onclick=()=>models()" in INDEX_HTML
 
 
 def test_pull_prefers_manual_name_and_selects_downloaded_model() -> None:

@@ -19,6 +19,8 @@
   accept safe diff wrappers and new-file `@@ -0,0` hunks, and provide actionable repair guidance.
 - Fixed proposal application reports for newly created files: allowed untracked files are now
   recorded as `new file` diffs without staging them.
+- Fixed the model refresh control so browser `PointerEvent` objects cannot appear as bogus
+  model names in the native model dropdown.
 - Added a live Ollama runtime panel in the web UI. It refreshes every 15 seconds and
   shows loaded-model VRAM allocation, estimated GPU/CPU placement, and context length.
 - Expanded the panel with CPU/RAM cards and NVIDIA GPU utilization, temperature, VRAM,
