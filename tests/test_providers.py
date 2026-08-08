@@ -84,8 +84,9 @@ def test_ollama_running_models_returns_safe_runtime_fields() -> None:
 def test_ollama_stream_collects_chunks_and_done_reason() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert body["format"] == {"type": "object"}
+        assert body["format"] == "json"
         assert body["stream"] is True
+        assert body["options"]["num_predict"] == 256
         return httpx.Response(
             200,
             text="\n".join(
@@ -97,7 +98,7 @@ def test_ollama_stream_collects_chunks_and_done_reason() -> None:
         )
 
     provider = OllamaProvider(ollama_settings(), httpx.MockTransport(handler))
-    assert provider.chat([], {"type": "object"}, 100) == '{"ok":true}'
+    assert provider.chat([], {"type": "object"}, 100, 256) == '{"ok":true}'
     assert provider.last_generation_metadata
     assert provider.last_generation_metadata.finish_reason == "stop"
 
@@ -132,6 +133,66 @@ def test_ollama_stream_enforces_output_limit() -> None:
     with pytest.raises(ProviderError) as captured:
         provider.chat([], None, 3)
     assert captured.value.category == "output_limit"
+
+
+def test_ollama_explicit_json_schema_mode_sends_schema() -> None:
+    schema = {"type": "object"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["format"] == schema
+        return httpx.Response(200, text='{"message":{"content":"{}"},"done":true}\n')
+
+    provider = OllamaProvider(
+        ollama_settings(llm_json_mode="json-schema"),
+        httpx.MockTransport(handler),
+    )
+    assert provider.chat([], schema, 100, 32) == "{}"
+
+
+@pytest.mark.parametrize(
+    ("json_mode", "category"),
+    [
+        ("auto", "provider_stream_error"),
+        ("json-schema", "structured_output_error"),
+    ],
+)
+def test_ollama_stream_error_chunk_is_classified_without_body(
+    json_mode: str,
+    category: str,
+) -> None:
+    provider = OllamaProvider(
+        ollama_settings(llm_json_mode=json_mode),
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                text='{"error":"SENSITIVE peg-native failure"}\n',
+            )
+        ),
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.chat([], {"type": "object"}, 100)
+
+    assert captured.value.category == category
+    assert "SENSITIVE" not in str(captured.value)
+
+
+def test_ollama_non_stream_error_is_classified_without_body() -> None:
+    provider = OllamaProvider(
+        ollama_settings(llm_stream=False),
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"error": "SENSITIVE provider failure"},
+            )
+        ),
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.chat([], None, 100)
+
+    assert captured.value.category == "provider_stream_error"
+    assert "SENSITIVE" not in str(captured.value)
 
 
 def test_ollama_read_error_is_classified_as_transport_error() -> None:
@@ -194,6 +255,7 @@ def test_openai_stream_collects_sse_usage_and_finish_reason() -> None:
         body = json.loads(request.content)
         assert body["model"] == "qwen/test:free"
         assert body["response_format"] == {"type": "json_object"}
+        assert body["max_tokens"] == 256
         return httpx.Response(
             200,
             text="\n".join(
@@ -208,7 +270,7 @@ def test_openai_stream_collects_sse_usage_and_finish_reason() -> None:
         )
 
     provider = OpenAICompatibleProvider(openai_settings(), httpx.MockTransport(handler))
-    assert provider.chat([], {"type": "object"}, 100) == '{"ok":true}'
+    assert provider.chat([], {"type": "object"}, 100, 256) == '{"ok":true}'
     assert provider.last_generation_metadata
     assert provider.last_generation_metadata.finish_reason == "stop"
     assert provider.last_generation_metadata.usage["total_tokens"] == 5

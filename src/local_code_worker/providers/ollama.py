@@ -198,21 +198,25 @@ class OllamaProvider:
         messages: list[dict[str, str]],
         response_schema: dict[str, object] | None,
         max_output_characters: int,
+        max_output_tokens: int | None = None,
     ) -> str:
+        options: dict[str, object] = {
+            "temperature": self.settings.llm_temperature,
+            "num_ctx": self.settings.llm_num_ctx,
+        }
+        if max_output_tokens is not None:
+            options["num_predict"] = max_output_tokens
         request_body: dict[str, object] = {
             "model": self.settings.llm_model,
             "stream": self.settings.llm_stream,
             "keep_alive": self.settings.llm_keep_alive,
             "messages": messages,
-            "options": {
-                "temperature": self.settings.llm_temperature,
-                "num_ctx": self.settings.llm_num_ctx,
-            },
+            "options": options,
         }
         mode = self.settings.llm_json_mode
-        if mode in {JsonMode.AUTO, JsonMode.JSON_SCHEMA} and response_schema is not None:
+        if mode is JsonMode.JSON_SCHEMA and response_schema is not None:
             request_body["format"] = response_schema
-        elif mode is JsonMode.JSON_OBJECT:
+        elif mode in {JsonMode.AUTO, JsonMode.JSON_OBJECT}:
             request_body["format"] = "json"
 
         started_at = datetime.now(UTC)
@@ -281,6 +285,11 @@ class OllamaProvider:
                         "Ollama returned an invalid NDJSON chunk",
                         category="invalid_stream_chunk",
                     ) from error
+                if chunk.get("error") is not None:
+                    raise ProviderError(
+                        "Ollama rejected the streamed response",
+                        category=_ollama_error_category(request_body),
+                    )
                 text = chunk.get("message", {}).get("content", "")
                 if not isinstance(text, str):
                     raise ProviderError(
@@ -315,6 +324,11 @@ class OllamaProvider:
             payload = response.json()
         except ValueError as error:
             raise ProviderError("Ollama returned invalid JSON", category="invalid_json") from error
+        if isinstance(payload, dict) and payload.get("error") is not None:
+            raise ProviderError(
+                "Ollama rejected the response",
+                category=_ollama_error_category(request_body),
+            )
         content = payload.get("message", {}).get("content") if isinstance(payload, dict) else None
         if not isinstance(content, str):
             raise ProviderError(
@@ -337,6 +351,7 @@ class OllamaProvider:
             ],
             ModelImplementationResponse.model_json_schema(),
             max_output_characters,
+            self.settings.llm_max_output_tokens,
         )
 
 
@@ -352,3 +367,11 @@ def _parse_usage(payload: object) -> dict[str, int]:
         "completion_tokens": completion,
         "total_tokens": prompt + completion,
     }
+
+
+def _ollama_error_category(request_body: dict[str, object]) -> str:
+    return (
+        "structured_output_error"
+        if isinstance(request_body.get("format"), dict)
+        else "provider_stream_error"
+    )

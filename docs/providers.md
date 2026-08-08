@@ -32,8 +32,9 @@ the key. Reports store only the variable name, never its value or an Authorizati
 ## Ollama
 
 Ollama uses `/api/tags`, `/api/chat`, and `/api/ps`. Streaming consumes NDJSON until a `done` chunk,
-preserves `done_reason`, and enforces the configured output limit while reading. The endpoint is
-restricted to loopback or `host.docker.internal`.
+rejects explicit error chunks without persisting their potentially sensitive body, preserves
+`done_reason`, sends `num_predict`, and enforces the character limit while reading. The endpoint
+is restricted to loopback or `host.docker.internal`.
 
 An explicit standalone health check is:
 
@@ -57,8 +58,8 @@ non-secret summary with `check-local-llm.cmd`. OpenRouter-specific configuration
 
 ## JSON modes
 
-- `auto` — Ollama schema format or a conservative OpenAI-compatible JSON object; a clearly rejected
-  response format receives one retry in prompt-only mode.
+- `auto` — a conservative JSON object for Ollama and OpenAI-compatible providers; a clearly
+  rejected OpenAI-compatible response format receives one retry in prompt-only mode.
 - `json-schema` — request strict server-side JSON Schema support.
 - `json-object` — request a JSON object without assuming schema support.
 - `prompt-only` — rely on the system prompt and local validation.

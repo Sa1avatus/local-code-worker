@@ -36,6 +36,7 @@ class WorkerTask(StrictModel):
     validation_commands: list[list[str]] = Field(default_factory=list)
     max_context_characters: int = Field(default=50_000, gt=0)
     max_output_characters: int = Field(default=100_000, gt=0)
+    max_output_tokens: int = Field(default=4_096, gt=0)
     proposal_format: ProposalFormat = ProposalFormat.PATCH
     prompt_format: PromptFormat = PromptFormat.XML
 

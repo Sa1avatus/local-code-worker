@@ -12,7 +12,7 @@ A task follows `examples/task.example.json` and contains:
 - `readonly_files`, supporting context that cannot be changed;
 - requirements, interface contracts, and mechanical acceptance criteria;
 - allowlisted validation commands expressed as argument arrays;
-- context/output limits and a `proposal_format`.
+- context/output limits in characters and tokens, plus a `proposal_format`.
 
 Paths must be repository-relative, must not contain parent traversal, and must resolve inside the
 Git worktree. Context files are UTF-8 text. Protected paths and files outside the explicit lists are
@@ -43,6 +43,9 @@ format when compatibility requires it.
 
 Prompt format never changes the proposal response format: both modes return the same strict JSON
 schema so path validation, patch materialization, and two-phase approval continue to work.
+
+`max_output_tokens` is sent to the provider as its native generation limit (`num_predict` for
+Ollama). `max_output_characters` remains an independent streaming and proposal-size safety limit.
 
 ## Two-phase Codex mode
 
@@ -87,6 +90,10 @@ modified blocks generation/application. This prevents the proposal from overwrit
 Invalid JSON or schema output may receive one compact repair attempt with the same provider and
 model. Provider refusal, transport failure, empty output, semantic failure, placeholder content, and
 truncation are classified in reports. The Worker never chooses a fallback model.
+
+Provider and transport failures occur before a proposal exists and therefore do not count as
+rejected proposals. Do not repeat an unchanged prompt after the same deterministic provider error;
+fix the provider mode, limit, or task contract first.
 
 If application writes fail, already replaced files are restored from the run backup. Test failures
 after a valid write remain visible for review; do not hide them or perform Git reset automatically.

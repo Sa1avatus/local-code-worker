@@ -99,6 +99,15 @@ def _build_xml_context(task: WorkerTask) -> tuple[str, ContextStatistics]:
         f'<interface name="{escape(item.name, quote=True)}">{escape(item.signature)}</interface>'
         for item in task.interfaces
     )
+    acceptance_criteria = "\n".join(
+        f"<criterion>{escape(item)}</criterion>" for item in task.acceptance_criteria
+    )
+    validation_commands = "\n".join(
+        "<command>"
+        + "".join(f"<argument>{escape(argument)}</argument>" for argument in command)
+        + "</command>"
+        for command in task.validation_commands
+    )
     context = "\n".join(
         [
             "<context_dependencies>",
@@ -113,6 +122,12 @@ def _build_xml_context(task: WorkerTask) -> tuple[str, ContextStatistics]:
             "<interfaces>",
             interfaces,
             "</interfaces>",
+            "<acceptance_criteria>",
+            acceptance_criteria,
+            "</acceptance_criteria>",
+            "<validation_commands>",
+            validation_commands,
+            "</validation_commands>",
             "</task_instruction>",
             "<negative_constraints>",
             (

@@ -18,9 +18,10 @@ class FakeProvider:
     def list_models(self) -> list[str]:
         return ["qwen:test", "qwen:other"]
 
-    def chat(self, messages, response_schema, max_output_characters):
+    def chat(self, messages, response_schema, max_output_characters, max_output_tokens=None):
         assert messages[-1] == {"role": "user", "content": "hello"}
         assert response_schema is None
+        assert max_output_tokens == self.settings.llm_max_output_tokens
         self.last_generation_metadata = GenerationMetadata(
             provider=ProviderName.OLLAMA,
             model=self.settings.llm_model,

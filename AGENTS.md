@@ -65,6 +65,10 @@ minimal and explicitly listed. Set `"prompt_format": "json"` only for a reviewed
 need. This setting affects prompt input only: model responses must remain schema-validated JSON
 proposals, never Markdown code blocks.
 
+Provider and transport failures do not count as rejected proposals because there is nothing to
+review. Never retry an identical prompt after the same deterministic provider error; diagnose and
+change the provider mode, generation limit, or task contract first.
+
 ## Boundaries
 
 ### Always

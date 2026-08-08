@@ -14,6 +14,7 @@ def task(root: Path, prompt_format: PromptFormat = PromptFormat.XML) -> WorkerTa
         readonly_files=[Path("src/types.py")],
         requirements=["Use the declared type"],
         acceptance_criteria=["Tests pass"],
+        validation_commands=[["python", "-m", "pytest", "tests/test_unit.py"]],
         prompt_format=prompt_format,
     )
 
@@ -29,6 +30,10 @@ def test_xml_execution_contract_separates_dependencies_and_task(tmp_path: Path) 
     assert "<task_instruction>" in context
     assert "<negative_constraints>" in context
     assert "<output_format>" in context
+    assert "<acceptance_criteria>" in context
+    assert "<criterion>Tests pass</criterion>" in context
+    assert "<validation_commands>" in context
+    assert "<argument>pytest</argument>" in context
     assert statistics.paths == ("src/editable.py", "src/types.py")
 
 

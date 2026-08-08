@@ -25,6 +25,7 @@ class WorkerSettings(BaseSettings):
     llm_read_timeout_seconds: float | None = Field(default=None, gt=0)
     llm_num_ctx: int = Field(default=16_384, gt=0)
     llm_max_output_characters: int = Field(default=100_000, gt=0)
+    llm_max_output_tokens: int = Field(default=4_096, gt=0)
     llm_temperature: float = Field(default=0, ge=0)
     llm_stream: bool = True
     llm_json_mode: JsonMode = JsonMode.AUTO

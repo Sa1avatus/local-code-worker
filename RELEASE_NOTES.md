@@ -15,6 +15,10 @@
   prompt/completion tokens, generation speed, successful code proposals, and invalid proposals.
 - Added a web API and dashboard card for the aggregate statistics. Prompt text, source code,
   API keys, and provider configuration are never stored in the statistics journal.
+- Fixed runaway and misleading Ollama failures by sending a native token limit, detecting safe
+  error-chunk categories, and reserving strict server-side JSON Schema for explicit opt-in.
+- Expanded XML Execution Contracts with acceptance criteria and validation commands, and clarified
+  that provider failures are not rejected proposals and must not be retried unchanged.
 
 ### Documentation and contributor workflow
 
@@ -54,7 +58,7 @@
 ### Validation
 
 - `python -m ruff check src tests`
-- `python -m pytest tests -q` (`125 passed` in the container)
+- `python -m pytest tests -q` (`129 passed` in the container)
 - `python -m pytest tests -q` (`122 passed` in the container after the documentation audit)
 - `python -m pytest tests -q` (`106 passed` in the container)
 

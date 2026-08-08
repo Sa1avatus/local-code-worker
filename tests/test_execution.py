@@ -45,6 +45,7 @@ class FakeOllamaClient:
         self.settings = SimpleNamespace(
             llm_json_mode=JsonMode.PROMPT_ONLY,
             llm_max_output_characters=100_000,
+            llm_max_output_tokens=4_096,
         )
 
     def chat(
@@ -52,7 +53,9 @@ class FakeOllamaClient:
         messages: list[dict[str, str]],
         response_schema: dict[str, object],
         max_output_characters: int,
+        max_output_tokens: int | None = None,
     ) -> str:
+        assert max_output_tokens == 4_096
         self.calls.append((messages, response_schema))
         response = self.responses.pop(0)
         if isinstance(response, Exception):

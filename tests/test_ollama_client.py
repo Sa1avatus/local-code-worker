@@ -24,7 +24,8 @@ def test_ollama_client_returns_message_content() -> None:
         body = json.loads(request.content)
         assert request.url.path == "/api/chat"
         assert body["stream"] is False
-        assert isinstance(body["format"], dict)
+        assert body["format"] == "json"
+        assert body["options"]["num_predict"] == 4_096
         return httpx.Response(
             200,
             json={

@@ -105,6 +105,12 @@ def generate_implementation(
         task.max_output_characters,
     )
     output_limit = min(task.max_output_characters, provider_output_limit)
+    provider_token_limit = getattr(
+        provider_settings,
+        "llm_max_output_tokens",
+        task.max_output_tokens,
+    )
+    token_limit = min(task.max_output_tokens, provider_token_limit)
     attempts: list[ResponseAttempt] = []
     messages = [
         {"role": "system", "content": system_prompt},
@@ -122,6 +128,7 @@ def generate_implementation(
             messages,
             schema,
             output_limit,
+            token_limit,
         )
     except (ProviderError, OllamaError) as error:
         attempts.append(
@@ -191,6 +198,7 @@ def generate_implementation(
             repair_messages,
             schema,
             output_limit,
+            token_limit,
         )
     except (ProviderError, OllamaError) as error:
         attempts.append(

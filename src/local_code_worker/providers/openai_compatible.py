@@ -113,15 +113,26 @@ class OpenAICompatibleProvider:
         messages: list[dict[str, str]],
         response_schema: dict[str, object] | None,
         max_output_characters: int,
+        max_output_tokens: int | None = None,
     ) -> str:
         mode = self._effective_json_mode()
         try:
-            return self._chat_once(messages, response_schema, max_output_characters, mode)
+            return self._chat_once(
+                messages,
+                response_schema,
+                max_output_characters,
+                max_output_tokens,
+                mode,
+            )
         except _UnsupportedResponseFormat:
             if self.settings.llm_json_mode is not JsonMode.AUTO:
                 raise
             return self._chat_once(
-                messages, response_schema, max_output_characters, JsonMode.PROMPT_ONLY
+                messages,
+                response_schema,
+                max_output_characters,
+                max_output_tokens,
+                JsonMode.PROMPT_ONLY,
             )
 
     def _chat_once(
@@ -129,6 +140,7 @@ class OpenAICompatibleProvider:
         messages: list[dict[str, str]],
         response_schema: dict[str, object] | None,
         limit: int,
+        max_output_tokens: int | None,
         mode: JsonMode,
     ) -> str:
         request_body: dict[str, object] = {
@@ -137,6 +149,8 @@ class OpenAICompatibleProvider:
             "temperature": self.settings.llm_temperature,
             "stream": self.settings.llm_stream,
         }
+        if max_output_tokens is not None:
+            request_body["max_tokens"] = max_output_tokens
         if mode is JsonMode.JSON_SCHEMA and response_schema is not None:
             request_body["response_format"] = {
                 "type": "json_schema",

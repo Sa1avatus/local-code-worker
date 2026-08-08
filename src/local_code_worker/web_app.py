@@ -152,6 +152,9 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             updates["llm_max_output_characters"] = min(
                 settings.llm_max_output_characters, max_tokens * 8
             )
+            updates["llm_max_output_tokens"] = min(
+                settings.llm_max_output_tokens, max_tokens
+            )
         response_format = payload.get("response_format")
         if response_format is not None:
             if not isinstance(response_format, dict):
@@ -169,7 +172,12 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
     def _chat_completion(self) -> None:
         settings, messages, stream = self._chat_request()
         provider = create_provider(settings)
-        content = provider.chat(messages, None, settings.llm_max_output_characters)
+        content = provider.chat(
+            messages,
+            None,
+            settings.llm_max_output_characters,
+            settings.llm_max_output_tokens,
+        )
         metadata = provider.last_generation_metadata
         record_model_call(metadata, kind="chat", outcome="completed")
         completion_id = f"chatcmpl-{uuid.uuid4().hex}"

@@ -17,4 +17,5 @@ class LlmProvider(Protocol):
         messages: list[dict[str, str]],
         response_schema: dict[str, object] | None,
         max_output_characters: int,
+        max_output_tokens: int | None = None,
     ) -> str: ...

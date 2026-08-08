@@ -22,9 +22,15 @@ class OllamaClient(OllamaProvider):
         messages: list[dict[str, str]],
         response_schema: dict[str, object] | None,
         max_output_characters: int,
+        max_output_tokens: int | None = None,
     ) -> str:
         try:
-            return super().chat(messages, response_schema, max_output_characters)
+            return super().chat(
+                messages,
+                response_schema,
+                max_output_characters,
+                max_output_tokens,
+            )
         except ProviderError as error:
             raise OllamaError(str(error)) from error
 
