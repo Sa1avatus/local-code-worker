@@ -24,5 +24,6 @@
   "validation_commands": [],
   "max_context_characters": 50000,
   "max_output_characters": 100000,
-  "proposal_format": "patch"
+  "proposal_format": "patch",
+  "prompt_format": "xml"
 }

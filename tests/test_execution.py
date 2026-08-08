@@ -18,7 +18,13 @@ from local_code_worker.execution import (
     generate_implementation,
     implementation_response_schema,
 )
-from local_code_worker.models import JsonMode, ProposalFormat, ResponseStatus, WorkerTask
+from local_code_worker.models import (
+    JsonMode,
+    PromptFormat,
+    ProposalFormat,
+    ResponseStatus,
+    WorkerTask,
+)
 from local_code_worker.prompt_loader import load_system_prompt
 from local_code_worker.report_writer import RunReportWriter
 
@@ -211,13 +217,21 @@ def test_patch_repair_explains_hunk_format_and_forbids_complete_file() -> None:
 
 def test_patch_system_prompt_requires_hunks_not_file_content() -> None:
     worker_root = Path(__file__).resolve().parents[1]
-    prompt = load_system_prompt(worker_root, ProposalFormat.PATCH)
+    prompt = load_system_prompt(worker_root, ProposalFormat.PATCH, PromptFormat.JSON)
     assert "patches[].diff" in prompt
     assert "Never use files[].content" in prompt
     assert "files[].content contains the complete final source text" not in prompt
     assert "@@ -0,0 +1,N @@" in prompt
     assert "exactly `N`" in prompt
     assert "each beginning with `+`" in prompt
+
+
+def test_xml_system_prompt_is_execution_contract() -> None:
+    worker_root = Path(__file__).resolve().parents[1]
+    prompt = load_system_prompt(worker_root, ProposalFormat.PATCH, PromptFormat.XML)
+    assert "<system_role>" in prompt
+    assert "patches[].diff" in prompt
+    assert "<output_format>" in prompt
 
 
 def test_prompt_only_initial_request_includes_response_schema(tmp_path: Path) -> None:

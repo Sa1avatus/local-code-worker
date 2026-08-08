@@ -37,6 +37,8 @@ def test_dashboard_requests_system_metrics_and_renders_cards() -> None:
     assert "'/api/system'" in INDEX_HTML
     assert "renderMetrics(system)" in INDEX_HTML
     assert "linear-gradient(90deg,var(--accent),var(--ok))" in INDEX_HTML
+    assert 'id="usageStats"' in INDEX_HTML
+    assert "'/api/statistics'" in INDEX_HTML
 
 
 def test_context_length_is_loaded_saved_and_requires_model_reload() -> None:

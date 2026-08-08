@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Model execution and observability
+
+- Added XML Execution Contracts as the default prompt input format. The contract separates
+  the system role, explicit dependencies, atomic task instruction, negative constraints, and
+  output requirements, while keeping source content isolated in CDATA blocks.
+- Kept the legacy JSON prompt context as an explicit `"prompt_format": "json"` compatibility
+  option. Model proposals remain schema-validated JSON in both modes.
+- Added dedicated XML system prompts for patch and full-file proposals, including strict
+  constraints against invented APIs, files, dependencies, and commands.
+- Added persisted, privacy-safe aggregate model-call statistics by provider and model:
+  prompt/completion tokens, generation speed, successful code proposals, and invalid proposals.
+- Added a web API and dashboard card for the aggregate statistics. Prompt text, source code,
+  API keys, and provider configuration are never stored in the statistics journal.
+
 ### Documentation and contributor workflow
 
 - Added concise project agent instructions with thin Claude and GitHub Copilot entry points.
@@ -40,6 +54,7 @@
 ### Validation
 
 - `python -m ruff check src tests`
+- `python -m pytest tests -q` (`125 passed` in the container)
 - `python -m pytest tests -q` (`122 passed` in the container after the documentation audit)
 - `python -m pytest tests -q` (`106 passed` in the container)
 

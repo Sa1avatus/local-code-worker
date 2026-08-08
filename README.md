@@ -5,6 +5,10 @@ only explicitly allowed and read-only files, receives no shell, and cannot choos
 proposal is separate from application, and an approved application is revalidated before any file is
 written.
 
+Task input defaults to an XML Execution Contract that isolates role, dependencies, task,
+negative constraints, and output contract. Set `"prompt_format": "json"` in a task only when
+legacy JSON context is required; model proposals remain strict JSON in both modes.
+
 Supported providers:
 
 - local Ollama;

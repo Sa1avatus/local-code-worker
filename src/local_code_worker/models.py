@@ -18,6 +18,11 @@ class ProposalFormat(StrEnum):
     FILES = "files"
 
 
+class PromptFormat(StrEnum):
+    XML = "xml"
+    JSON = "json"
+
+
 class WorkerTask(StrictModel):
     task_id: str
     title: str
@@ -32,6 +37,7 @@ class WorkerTask(StrictModel):
     max_context_characters: int = Field(default=50_000, gt=0)
     max_output_characters: int = Field(default=100_000, gt=0)
     proposal_format: ProposalFormat = ProposalFormat.PATCH
+    prompt_format: PromptFormat = PromptFormat.XML
 
     @field_validator("task_id")
     @classmethod

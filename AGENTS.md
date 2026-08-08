@@ -57,6 +57,14 @@ Follow the nearest tests, preserve the two-phase proposal/application boundary, 
 regression coverage, run relevant Ruff and pytest checks, then inspect the diff. Keep provider and
 model selection explicit; never introduce silent fallback.
 
+## Execution contracts
+
+New task files default to `"prompt_format": "xml"`. XML contracts isolate system role,
+dependencies, task instruction, negative constraints, and output format; keep source context
+minimal and explicitly listed. Set `"prompt_format": "json"` only for a reviewed compatibility
+need. This setting affects prompt input only: model responses must remain schema-validated JSON
+proposals, never Markdown code blocks.
+
 ## Boundaries
 
 ### Always

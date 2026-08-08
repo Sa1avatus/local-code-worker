@@ -42,6 +42,8 @@ def api_server(monkeypatch: pytest.MonkeyPatch):
     settings = WorkerSettings(llm_model="qwen:test")
     monkeypatch.setattr(web_app.WorkerWebHandler, "_settings", lambda self: settings)
     monkeypatch.setattr(web_app, "create_provider", lambda value: FakeProvider(value))
+    monkeypatch.setattr(web_app, "record_model_call", lambda *args, **kwargs: None)
+    monkeypatch.setattr(web_app, "summarize_model_calls", lambda: {"models": []})
     server = ThreadingHTTPServer(("127.0.0.1", 0), web_app.WorkerWebHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

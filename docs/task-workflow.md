@@ -33,6 +33,17 @@ provider must return the entire final content and cannot omit unchanged sections
 
 The model never selects extra files, commands, a provider, or a model.
 
+## Prompt input formats
+
+`"prompt_format": "xml"` is the default. It builds an Execution Contract with separate
+`<context_dependencies>`, `<task_instruction>`, `<negative_constraints>`, and `<output_format>`
+blocks, while the system message supplies `<system_role>`. File text remains limited to explicit
+task paths and is isolated as data. Use `"prompt_format": "json"` for the legacy JSON context
+format when compatibility requires it.
+
+Prompt format never changes the proposal response format: both modes return the same strict JSON
+schema so path validation, patch materialization, and two-phase approval continue to work.
+
 ## Two-phase Codex mode
 
 Validate locally first:

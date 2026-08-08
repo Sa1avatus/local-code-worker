@@ -32,6 +32,7 @@ from .providers import create_provider
 from .report_writer import RunReportWriter, create_run_id, format_validation_results
 from .repository import get_allowed_diff, inspect_repository
 from .task_loader import load_task
+from .usage_statistics import record_worker_attempt
 
 
 def utc_now() -> str:
@@ -231,7 +232,7 @@ def _run_task_command(
         return 0
     state = inspect_repository(task)
     context, context_statistics = build_context(task)
-    system_prompt = load_system_prompt(worker_root, task.proposal_format)
+    system_prompt = load_system_prompt(worker_root, task.proposal_format, task.prompt_format)
     run_id = create_run_id(task.task_id)
     reports_directory = report_directory or settings.worker_reports_directory
     report_writer = RunReportWriter(state.root, reports_directory, run_id)
@@ -265,6 +266,8 @@ def _run_task_command(
         max_repair_attempts=max_repair_attempts,
         save_invalid_response=save_invalid_response,
     )
+    for attempt in generation.attempts:
+        record_worker_attempt(attempt)
     response = generation.response
     report = WorkerReport(
         run_id=run_id,

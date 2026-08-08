@@ -221,11 +221,11 @@ class OllamaProvider:
         try:
             with self._client() as client:
                 if self.settings.llm_stream:
-                    content, finish_reason = self._stream_chat(
+                    content, finish_reason, usage = self._stream_chat(
                         client, request_body, max_output_characters
                     )
                 else:
-                    content, finish_reason = self._non_stream_chat(
+                    content, finish_reason, usage = self._non_stream_chat(
                         client, request_body, max_output_characters
                     )
         except httpx.ConnectError as error:
@@ -257,16 +257,18 @@ class OllamaProvider:
             streaming=self.settings.llm_stream,
             response_format_mode=mode,
             finish_reason=finish_reason,
+            usage=usage,
         )
         return content
 
     def _stream_chat(
         self, client: httpx.Client, request_body: dict[str, object], limit: int
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, dict[str, int]]:
         parts: list[str] = []
         total = 0
         finish_reason: str | None = None
         saw_done = False
+        usage: dict[str, int] = {}
         with client.stream("POST", f"{self.base_url}/api/chat", json=request_body) as response:
             response.raise_for_status()
             for line in response.iter_lines():
@@ -295,17 +297,18 @@ class OllamaProvider:
                 if chunk.get("done") is True:
                     saw_done = True
                     finish_reason = chunk.get("done_reason")
+                    usage = _parse_usage(chunk)
                     break
         if not saw_done:
             raise ProviderError(
                 "Ollama stream ended before a done chunk",
                 category="truncated_stream",
             )
-        return "".join(parts), finish_reason
+        return "".join(parts), finish_reason, usage
 
     def _non_stream_chat(
         self, client: httpx.Client, request_body: dict[str, object], limit: int
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, dict[str, int]]:
         response = client.post(f"{self.base_url}/api/chat", json=request_body)
         response.raise_for_status()
         try:
@@ -322,7 +325,7 @@ class OllamaProvider:
                 f"Ollama output exceeds the {limit}-character limit",
                 category="output_limit",
             )
-        return content, payload.get("done_reason")
+        return content, payload.get("done_reason"), _parse_usage(payload)
 
     def generate(self, system_prompt: str, user_context: str, max_output_characters: int) -> str:
         from ..models import ModelImplementationResponse
@@ -335,3 +338,17 @@ class OllamaProvider:
             ModelImplementationResponse.model_json_schema(),
             max_output_characters,
         )
+
+
+def _parse_usage(payload: object) -> dict[str, int]:
+    if not isinstance(payload, dict):
+        return {}
+    prompt = payload.get("prompt_eval_count")
+    completion = payload.get("eval_count")
+    if not isinstance(prompt, int) or not isinstance(completion, int):
+        return {}
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+    }
