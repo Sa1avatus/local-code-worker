@@ -1,37 +1,28 @@
 {
-  "task_id": "vacancy-deduplication-001",
-  "title": "Add vacancy deduplication",
-  "goal": "Prevent duplicate vacancies from being created",
-  "repository_root": "D:/projects/job-agent",
+  "task_id": "readme-clarification-001",
+  "title": "Clarify the Local Code Worker README",
+  "goal": "Clarify one existing setup sentence without changing CLI or runtime behavior",
+  "repository_root": "D:/OpenAIProjects/local-code-worker",
   "allowed_files": [
-    "src/vacancies/service.py",
-    "src/vacancies/repository.py",
-    "tests/vacancies/test_service.py"
+    "README.md"
   ],
   "readonly_files": [
-    "src/vacancies/models.py",
-    "docs/ARCHITECTURE.md"
+    "docs/development.md",
+    "docs/security.md"
   ],
   "requirements": [
-    "Match vacancies by provider and external_id",
-    "Preserve created_at when updating",
-    "Update updated_at"
+    "Change only the ambiguous setup sentence identified in the user request",
+    "Preserve all commands, links, headings, security boundaries, and unrelated wording",
+    "Do not add new files or dependencies"
   ],
-  "interfaces": [
-    {
-      "name": "get_by_provider_and_external_id",
-      "signature": "async def get_by_provider_and_external_id(self, provider: VacancyProvider, external_id: str) -> Vacancy | None"
-    }
-  ],
+  "interfaces": [],
   "acceptance_criteria": [
-    "Repeated import does not create a duplicate row",
-    "Existing internal ID is preserved",
-    "Tests pass"
+    "The revised sentence states the required setup action unambiguously",
+    "Every existing Markdown link and command remains unchanged",
+    "The proposal contains only README.md"
   ],
-  "validation_commands": [
-    ["python", "-m", "ruff", "check", "src/vacancies", "tests/vacancies"],
-    ["python", "-m", "pytest", "tests/vacancies/test_service.py", "-q"]
-  ],
+  "validation_commands": [],
   "max_context_characters": 50000,
-  "max_output_characters": 100000
+  "max_output_characters": 100000,
+  "proposal_format": "patch"
 }

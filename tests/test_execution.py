@@ -215,7 +215,9 @@ def test_patch_system_prompt_requires_hunks_not_file_content() -> None:
     assert "patches[].diff" in prompt
     assert "Never use files[].content" in prompt
     assert "files[].content contains the complete final source text" not in prompt
-    assert "@@ -0,0 +1,2 @@" in prompt
+    assert "@@ -0,0 +1,N @@" in prompt
+    assert "exactly `N`" in prompt
+    assert "each beginning with `+`" in prompt
 
 
 def test_prompt_only_initial_request_includes_response_schema(tmp_path: Path) -> None:

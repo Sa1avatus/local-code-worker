@@ -28,7 +28,9 @@ Rules for patches[].diff:
 - The first line of every hunk is exactly `@@ -old,count +new,count @@`.
 - Every following line begins with one space, `+`, `-`, or `\\`.
 - Hunk old/new counters must exactly match their lines.
-- For a new empty file use `@@ -0,0 +1,2 @@` followed by only `+` lines.
+- For a new file use exactly one `@@ -0,0 +1,N @@` hunk followed by exactly `N`
+  source lines, each beginning with `+`.
+- New-file hunks must not contain unprefixed source lines or full-file text outside the hunk.
 - Do not return a complete file where a diff is required.
 
 Preserve public interfaces unless the task explicitly changes them. Include every changed

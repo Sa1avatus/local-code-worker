@@ -1,87 +1,78 @@
 # LLM providers
 
-Local Code Worker supports local Ollama and OpenAI-compatible HTTP APIs. Provider and
-model selection is explicit for every run; the worker never changes the selected model,
-removes a `:free` suffix, or falls back to a paid model.
+Read this document when configuring or changing Ollama/OpenAI-compatible transports, model
+discovery, streaming, JSON response modes, or provider failure handling.
 
-## Configuration
+Local Code Worker supports local Ollama and OpenAI-compatible HTTP APIs. It never removes a model
+suffix, selects `auto`, or falls back to another free or paid model.
 
-Configuration priority is CLI, current `LLM_*` environment or `.env` values, legacy
-`OLLAMA_*` values, then defaults. Copy `.env.example` to `.env` for local configuration.
-Do not commit `.env`.
+## Configuration sources
 
-API keys are never accepted as CLI values. Set `LLM_API_KEY_ENV` to the name of a
-variable holding the key, or pass `--api-key-env NAME`. The report records only that
-variable name. It does not store the value, Authorization header, or full environment.
+The workspace container reads `/data/.env`, managed by the loopback web UI. Use:
+
+```cmd
+D:\OpenAIProjects\scripts\start-local-worker-container.cmd
+D:\OpenAIProjects\scripts\check-local-llm.cmd
+```
+
+For standalone development, copy `.env.example` to ignored `.env` and run:
+
+```powershell
+.\.venv\Scripts\python.exe -m local_code_worker check-connection
+.\.venv\Scripts\python.exe -m local_code_worker list-models
+```
+
+Configuration precedence is a deliberate CLI override, current `LLM_*` environment or `.env`
+values, legacy `OLLAMA_*` values, then built-in Ollama defaults. Workspace project workflows do not
+pass overrides; they use the provider and model selected in the UI.
+
+API keys are never accepted as CLI values. `LLM_API_KEY_ENV` names the environment variable holding
+the key. Reports store only the variable name, never its value or an Authorization header.
 
 ## Ollama
 
-```cmd
-.venv\Scripts\python.exe -m local_code_worker provider-check ^
-  --provider ollama ^
-  --base-url http://localhost:11434 ^
-  --model qwen2.5-coder:3b
+Ollama uses `/api/tags`, `/api/chat`, and `/api/ps`. Streaming consumes NDJSON until a `done` chunk,
+preserves `done_reason`, and enforces the configured output limit while reading. The endpoint is
+restricted to loopback or `host.docker.internal`.
 
-.venv\Scripts\python.exe -m local_code_worker run ^
-  --task D:\OpenAIProjects\tasks\current.json ^
-  --provider ollama ^
-  --model qwen2.5-coder:3b
+An explicit standalone health check is:
+
+```powershell
+.\.venv\Scripts\python.exe -m local_code_worker provider-check --provider ollama --base-url http://localhost:11434 --model qwen2.5-coder:3b
 ```
 
-Ollama uses `/api/tags` and `/api/chat`. Streaming reads NDJSON until a `done` chunk,
-preserves `done_reason`, and enforces the character limit while reading. In `auto` or
-`json-schema` mode the response schema is sent as Ollama's `format`.
+Model download is available through the local UI and Ollama's native streaming pull API. Downloads
+consume network, disk, and provider resources and require approval.
 
-## Generic OpenAI-compatible API
+## OpenAI-compatible APIs
 
-```cmd
-set COMPATIBLE_API_KEY=...
+The provider uses `/models` and `/chat/completions` with Bearer authentication. Streaming uses SSE;
+non-streaming remains available for compatibility. A generation probe is never sent by default. If
+`/models` is unavailable, `provider-check --probe-generation` opts into a minimal billable request
+and therefore requires approval.
 
-.venv\Scripts\python.exe -m local_code_worker provider-check ^
-  --provider openai-compatible ^
-  --base-url https://provider.example/v1 ^
-  --model provider/model-name ^
-  --api-key-env COMPATIBLE_API_KEY
-```
-
-The provider uses `/models` and `/chat/completions` with Bearer authentication. Streaming
-uses SSE; non-streaming is available with `--no-stream`. A generation probe is never made
-by default. If `/models` is unavailable, opt into a minimal request with
-`--probe-generation`.
+Use the web UI to select the endpoint and a model returned by provider discovery. Then verify the
+non-secret summary with `check-local-llm.cmd`. OpenRouter-specific configuration is in
+`openrouter.md`.
 
 ## JSON modes
 
-- `auto`: Ollama schema format; safe `json-object` for OpenAI-compatible APIs. If that
-  API clearly rejects `response_format`, one retry uses `prompt-only`.
-- `json-schema`: request strict server-side OpenAI JSON Schema support.
-- `json-object`: request a JSON object without assuming JSON Schema support.
-- `prompt-only`: rely on the existing strict system prompt and local validation.
-- `none`: send no response-format option and add no mode-specific prompt.
+- `auto` — Ollama schema format or a conservative OpenAI-compatible JSON object; a clearly rejected
+  response format receives one retry in prompt-only mode.
+- `json-schema` — request strict server-side JSON Schema support.
+- `json-object` — request a JSON object without assuming schema support.
+- `prompt-only` — rely on the system prompt and local validation.
+- `none` — send no response-format option.
 
-Every response is still parsed and validated locally. Invalid JSON, schema failures,
-placeholder content, semantic failures, and truncation may receive one compact repair
-attempt using the same provider and model.
+Every mode is parsed and validated locally. Invalid JSON or schema output may receive one bounded
+repair attempt with the same provider and model. HTTP 402, 404, 429, 5xx, refusal, timeout, and
+transport failures stop the run; they never select a different model.
 
-## Model listing and health
+## Data boundary
 
-```cmd
-.venv\Scripts\python.exe -m local_code_worker models --provider ollama
-.venv\Scripts\python.exe -m local_code_worker models ^
-  --provider openai-compatible ^
-  --base-url https://provider.example/v1 ^
-  --model provider/model-name ^
-  --api-key-env COMPATIBLE_API_KEY
-```
+An external provider receives all source text explicitly listed in the task's `allowed_files` and
+`readonly_files`. Review those lists and the provider's data policy. Never include secrets, `.env`,
+private keys, raw telemetry, browser sessions, personal data, or unrelated source.
 
-Rate limits and provider failures are reported with stable categories. HTTP 402, 404,
-429, and 5xx responses stop the run; they never trigger a different model.
-
-## Data and security
-
-Ollama keeps prompts local. An external provider receives the task context, including
-the source files explicitly listed in `allowed_files` and `readonly_files`. Review those
-lists and the provider's data policy before running. Never put secrets or `.env` files
-in task context.
-
-Endpoint query parameters and user information are removed from report metadata.
-Raw model responses are stored without HTTP headers.
+Endpoint user information and query parameters are removed from report metadata. Raw model
+responses are stored only in ignored report directories and never include HTTP headers.

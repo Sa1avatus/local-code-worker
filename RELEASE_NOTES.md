@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Documentation and contributor workflow
+
+- Added concise project agent instructions with thin Claude and GitHub Copilot entry points.
+- Split the former monolithic README into focused development, task workflow, provider, and
+  security references while preserving the container-first operating model.
+- Updated the example task and patch prompt with mechanically precise new-file hunk requirements.
+- Documented the current local statistics endpoint without exposing provider configuration or
+  stored prompts.
+
 ### Container workflow
 
 - Added a Docker Compose runtime that mounts the workspace at `/workspace` and preserves
@@ -31,6 +40,7 @@
 ### Validation
 
 - `python -m ruff check src tests`
+- `python -m pytest tests -q` (`122 passed` in the container after the documentation audit)
 - `python -m pytest tests -q` (`106 passed` in the container)
 
 ## 1.1.0

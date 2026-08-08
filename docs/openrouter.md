@@ -1,42 +1,28 @@
 # OpenRouter
 
-OpenRouter is used through the generic OpenAI-compatible provider. A model must always
-be selected explicitly in configuration or on the command line. Local Code Worker does
-not use `openrouter/auto`, remove `:free`, or choose another free or paid model.
+Read this document only when configuring the generic OpenAI-compatible provider for OpenRouter.
+
+Open the local UI at `http://127.0.0.1:8765`, select `openai-compatible`, set the base URL to
+`https://openrouter.ai/api/v1`, enter the API key in the write-only key field, refresh models, select
+an exact returned model ID, and save. The key remains in `/data/.env` inside the persistent Docker
+volume and is never returned by the API.
+
+Verify the non-secret selection:
 
 ```cmd
-set OPENROUTER_API_KEY=...
-
-.venv\Scripts\python.exe -m local_code_worker provider-check ^
-  --provider openai-compatible ^
-  --base-url https://openrouter.ai/api/v1 ^
-  --model qwen/qwen3-14b:free ^
-  --api-key-env OPENROUTER_API_KEY
-
-.venv\Scripts\python.exe -m local_code_worker run ^
-  --task D:\OpenAIProjects\tasks\current.json ^
-  --provider openai-compatible ^
-  --base-url https://openrouter.ai/api/v1 ^
-  --model qwen/qwen3-14b:free ^
-  --api-key-env OPENROUTER_API_KEY ^
-  --json-mode prompt-only
+D:\OpenAIProjects\scripts\check-local-llm.cmd
 ```
 
-The documented conservative preset uses `prompt-only` because model capabilities vary.
-Local Pydantic and semantic validation remain active, with a bounded repair attempt.
+Use `prompt-only` when the chosen model does not advertise reliable structured-output support.
+Local Pydantic, patch, placeholder, and semantic validation remain active in every mode.
 
-Optional attribution headers can be configured without code changes:
+Local Code Worker never uses `openrouter/auto`, removes a `:free` suffix, or chooses another model.
+Availability and pricing change independently of this repository; refresh the model list before a
+large task. HTTP 402, 404, 429, and 5xx responses stop the run without fallback.
 
-```text
-OPENROUTER_HTTP_REFERER=https://your-application.example
-OPENROUTER_APP_TITLE=Local Code Worker
-```
+Optional attribution headers are configured through `OPENROUTER_HTTP_REFERER` and
+`OPENROUTER_APP_TITLE`. They are not required for local operation.
 
-HTTP 402 means credits or payment are required, 404 commonly means the selected model
-or endpoint is unavailable, 429 is a rate limit, and 5xx is a provider failure. These
-errors stop the run. Free-model availability can change, so verify it with `models` or
-`provider-check` before starting a large task.
-
-Using OpenRouter sends the explicitly selected repository context to an external
-provider. Do not include credentials, private keys, `.env` files, or unrelated source
-files in the task.
+OpenRouter receives every explicit source file in the task context. Do not include credentials,
+private keys, `.env`, browser state, personal data, or unrelated code, and obtain approval before
+each provider generation.
