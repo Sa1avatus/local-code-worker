@@ -8,6 +8,16 @@ from local_code_worker.cli import create_parser, provider_check, settings_from_a
 from local_code_worker.config import WorkerSettings
 from local_code_worker.exceptions import ProviderConfigurationError, ProviderError
 from local_code_worker.models import JsonMode, ProviderName
+from local_code_worker.providers.base import (
+    ProviderCapability,
+    ProviderFunctionTool,
+    ProviderFunctionToolChoice,
+    ProviderMessage,
+    ProviderRequest,
+    ProviderTextDeltaEvent,
+    ProviderUsageEvent,
+    validate_event_sequence,
+)
 from local_code_worker.providers.factory import create_provider
 from local_code_worker.providers.ollama import OllamaProvider
 from local_code_worker.providers.openai_compatible import OpenAICompatibleProvider
@@ -35,8 +45,15 @@ def openai_settings(**overrides: object) -> WorkerSettings:
 
 
 def test_factory_selects_configured_provider() -> None:
-    assert isinstance(create_provider(ollama_settings()), OllamaProvider)
-    assert isinstance(create_provider(openai_settings()), OpenAICompatibleProvider)
+    ollama = create_provider(ollama_settings())
+    openai = create_provider(openai_settings())
+    assert isinstance(ollama, OllamaProvider)
+    assert isinstance(openai, OpenAICompatibleProvider)
+    for provider in (ollama, openai):
+        assert provider.capabilities.supports(ProviderCapability.STREAMING)
+        assert provider.capabilities.supports(ProviderCapability.JSON_SCHEMA)
+        assert provider.capabilities.supports(ProviderCapability.USAGE)
+        assert provider.capabilities.supports(ProviderCapability.FUNCTION_TOOLS)
 
 
 def test_ollama_tags_and_missing_model() -> None:
@@ -101,6 +118,79 @@ def test_ollama_stream_collects_chunks_and_done_reason() -> None:
     assert provider.chat([], {"type": "object"}, 100, 256) == '{"ok":true}'
     assert provider.last_generation_metadata
     assert provider.last_generation_metadata.finish_reason == "stop"
+
+
+def test_ollama_stream_emits_ordered_events_and_ttft() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    '{"message":{"content":"hel"},"done":false}',
+                    '{"message":{"content":"lo"},"done":false}',
+                    '{"message":{"content":""},"done":true,"done_reason":"stop",'
+                    '"prompt_eval_count":2,"eval_count":1}',
+                ]
+            ),
+        )
+    )
+    provider = OllamaProvider(ollama_settings(), transport)
+    request = ProviderRequest(
+        messages=[ProviderMessage(role="user", content="hello")],
+        response_schema={"type": "object"},
+        max_output_characters=100,
+        max_output_tokens=20,
+        json_mode=JsonMode.AUTO,
+        stream=True,
+    )
+
+    events = list(provider.stream(request))
+
+    validate_event_sequence(events)
+    assert [event.delta for event in events if isinstance(event, ProviderTextDeltaEvent)] == [
+        "hel",
+        "lo",
+    ]
+    usage_event = next(event for event in events if isinstance(event, ProviderUsageEvent))
+    assert usage_event.usage.total_tokens == 3
+    assert provider.last_generation_metadata is not None
+    assert provider.last_generation_metadata.time_to_first_token_ms is not None
+
+
+def test_ollama_stream_cancellation_closes_http_stream() -> None:
+    class TrackingStream(httpx.SyncByteStream):
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __iter__(self):
+            yield b'{"message":{"content":"first"},"done":false}\n'
+            yield b'{"message":{"content":"second"},"done":true}\n'
+
+        def close(self) -> None:
+            self.closed = True
+
+    tracking_stream = TrackingStream()
+    provider = OllamaProvider(
+        ollama_settings(),
+        httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=tracking_stream)
+        ),
+    )
+    request = ProviderRequest(
+        messages=[ProviderMessage(role="user", content="hello")],
+        max_output_characters=100,
+        json_mode=JsonMode.AUTO,
+        stream=True,
+    )
+    events = provider.stream(request)
+
+    next(events)
+    delta = next(events)
+    events.close()
+
+    assert isinstance(delta, ProviderTextDeltaEvent)
+    assert tracking_stream.closed is True
+    assert provider.last_generation_metadata is None
 
 
 @pytest.mark.parametrize(
@@ -195,6 +285,111 @@ def test_ollama_non_stream_error_is_classified_without_body() -> None:
     assert "SENSITIVE" not in str(captured.value)
 
 
+def test_ollama_non_stream_function_call_is_normalized() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["tools"][0]["function"]["name"] == "lookup"
+        assert body["tool_choice"]["function"]["name"] == "lookup"
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_ollama",
+                            "function": {
+                                "name": "lookup",
+                                "arguments": {"key": "value"},
+                            },
+                        }
+                    ],
+                },
+                "done_reason": "stop",
+            },
+        )
+
+    provider = OllamaProvider(
+        ollama_settings(llm_stream=False, llm_json_mode="none"),
+        httpx.MockTransport(handler),
+    )
+    provider.chat(
+        [],
+        None,
+        100,
+        tools=[ProviderFunctionTool(name="lookup", parameters={"type": "object"})],
+        tool_choice=ProviderFunctionToolChoice(name="lookup"),
+    )
+
+    assert provider.last_generation_metadata is not None
+    assert provider.last_generation_metadata.function_calls[0].model_dump() == {
+        "call_id": "call_ollama",
+        "name": "lookup",
+        "arguments": '{"key":"value"}',
+    }
+
+
+def test_ollama_text_tool_envelope_is_normalized_for_configured_function() -> None:
+    provider = OllamaProvider(
+        ollama_settings(llm_stream=False, llm_json_mode="none"),
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "content": '<tools>{"name":"lookup","arguments":{"key":"alpha"}}</tools>'
+                    },
+                    "done": True,
+                },
+            )
+        ),
+    )
+
+    content = provider.chat(
+        [],
+        None,
+        200,
+        tools=[ProviderFunctionTool(name="lookup", parameters={"type": "object"})],
+        tool_choice=ProviderFunctionToolChoice(name="lookup"),
+    )
+
+    assert content == ""
+    assert provider.last_generation_metadata is not None
+    assert provider.last_generation_metadata.function_calls[0].model_dump() == {
+        "call_id": "call_ollama_text_0",
+        "name": "lookup",
+        "arguments": '{"key":"alpha"}',
+    }
+
+
+def test_ollama_text_tool_envelope_does_not_allow_unknown_function() -> None:
+    provider = OllamaProvider(
+        ollama_settings(llm_stream=False, llm_json_mode="none"),
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "content": '<tools>{"name":"unknown","arguments":{}}</tools>'
+                    },
+                    "done": True,
+                },
+            )
+        ),
+    )
+
+    content = provider.chat(
+        [],
+        None,
+        200,
+        tools=[ProviderFunctionTool(name="lookup", parameters={"type": "object"})],
+    )
+
+    assert content.startswith("<tools>")
+    assert provider.last_generation_metadata is not None
+    assert provider.last_generation_metadata.function_calls == []
+
+
 def test_ollama_read_error_is_classified_as_transport_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadError("broken TLS record", request=request)
@@ -276,6 +471,82 @@ def test_openai_stream_collects_sse_usage_and_finish_reason() -> None:
     assert provider.last_generation_metadata.usage["total_tokens"] == 5
 
 
+def test_openai_stream_emits_ordered_events_and_ttft() -> None:
+    provider = OpenAICompatibleProvider(
+        openai_settings(),
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                text="\n".join(
+                    [
+                        'data: {"choices":[{"delta":{"content":"hel"},'
+                        '"finish_reason":null}]}',
+                        'data: {"choices":[{"delta":{"content":"lo"},'
+                        '"finish_reason":"stop"}],"usage":{"prompt_tokens":2,'
+                        '"completion_tokens":1}}',
+                        "data: [DONE]",
+                    ]
+                ),
+            )
+        ),
+    )
+    request = ProviderRequest(
+        messages=[ProviderMessage(role="user", content="hello")],
+        max_output_characters=100,
+        json_mode=JsonMode.JSON_OBJECT,
+        stream=True,
+    )
+
+    events = list(provider.stream(request))
+
+    validate_event_sequence(events)
+    assert [event.delta for event in events if isinstance(event, ProviderTextDeltaEvent)] == [
+        "hel",
+        "lo",
+    ]
+    usage_event = next(event for event in events if isinstance(event, ProviderUsageEvent))
+    assert usage_event.usage.total_tokens == 3
+    assert provider.last_generation_metadata is not None
+    assert provider.last_generation_metadata.time_to_first_token_ms is not None
+
+
+def test_openai_stream_cancellation_closes_http_stream() -> None:
+    class TrackingStream(httpx.SyncByteStream):
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __iter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"first"}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"content":"second"}}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        def close(self) -> None:
+            self.closed = True
+
+    tracking_stream = TrackingStream()
+    provider = OpenAICompatibleProvider(
+        openai_settings(),
+        httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=tracking_stream)
+        ),
+    )
+    request = ProviderRequest(
+        messages=[ProviderMessage(role="user", content="hello")],
+        max_output_characters=100,
+        json_mode=JsonMode.JSON_OBJECT,
+        stream=True,
+    )
+    events = provider.stream(request)
+
+    next(events)
+    delta = next(events)
+    events.close()
+
+    assert isinstance(delta, ProviderTextDeltaEvent)
+    assert tracking_stream.closed is True
+    assert provider.last_generation_metadata is None
+
+
 def test_openai_non_stream_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -298,6 +569,52 @@ def test_openai_non_stream_response() -> None:
     assert provider.chat([], None, 100) == '{"ok":true}'
     assert provider.last_generation_metadata
     assert provider.last_generation_metadata.finish_reason == "length"
+
+
+def test_openai_non_stream_function_call_is_normalized() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["tools"][0]["function"]["strict"] is True
+        assert body["tool_choice"]["function"]["name"] == "lookup"
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_openai",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"key":"value"}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        )
+
+    provider = OpenAICompatibleProvider(
+        openai_settings(llm_stream=False, llm_json_mode="none"),
+        httpx.MockTransport(handler),
+    )
+    provider.chat(
+        [],
+        None,
+        100,
+        tools=[ProviderFunctionTool(name="lookup", parameters={"type": "object"})],
+        tool_choice=ProviderFunctionToolChoice(name="lookup"),
+    )
+
+    assert provider.last_generation_metadata is not None
+    assert provider.last_generation_metadata.function_calls[0].call_id == "call_openai"
+    assert provider.last_generation_metadata.function_calls[0].arguments == '{"key":"value"}'
 
 
 @pytest.mark.parametrize("status", [401, 402, 404, 429, 500])

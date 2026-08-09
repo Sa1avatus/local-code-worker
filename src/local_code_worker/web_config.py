@@ -6,9 +6,115 @@ from pydantic import SecretStr
 
 from .config import WorkerSettings
 from .models import ProviderName
-from .web_models import ProviderSettingsInput
+from .routing.models import GatewayRoutingSettings, RoutingMode, TierConfig
+from .virtual_models import ModelTier
+from .web_models import GatewaySettingsInput, ProviderSettingsInput
 
 WEB_API_KEY_ENV = "LOCAL_CODE_WORKER_UI_API_KEY"
+TIER_API_KEY_ENV = {tier: f"LOCAL_CODE_WORKER_{tier.value.upper()}_API_KEY" for tier in ModelTier}
+
+
+def _parse_bool(value: str | None, *, default: bool) -> bool:
+    if value is None:
+        return default
+    normalized = value.casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean configuration value: {value}")
+
+
+def load_gateway_routing_settings(
+    env_path: Path = Path(".env"),
+) -> GatewayRoutingSettings:
+    file_values = dotenv_values(env_path)
+
+    def value(name: str) -> str | None:
+        raw = environ.get(name, file_values.get(name))
+        return str(raw).strip() if raw is not None and str(raw).strip() else None
+
+    tiers: dict[ModelTier, TierConfig] = {}
+    for tier in ModelTier:
+        prefix = f"GATEWAY_{tier.value.upper()}"
+        provider = value(f"{prefix}_PROVIDER")
+        model = value(f"{prefix}_MODEL")
+        if (provider is None) != (model is None):
+            raise ValueError(f"{prefix}_PROVIDER and {prefix}_MODEL must be configured together")
+        if provider is not None and model is not None:
+            enabled = value(f"{prefix}_ENABLED")
+            tiers[tier] = TierConfig(
+                provider=ProviderName(provider),
+                model=model,
+                enabled=_parse_bool(enabled, default=True),
+                base_url=value(f"{prefix}_BASE_URL"),
+                context_length=int(value(f"{prefix}_CONTEXT_LENGTH") or "16384"),
+                api_key_env=value(f"{prefix}_API_KEY_ENV"),
+            )
+
+    return GatewayRoutingSettings(
+        mode=RoutingMode(value("GATEWAY_ROUTING_MODE") or RoutingMode.LEGACY.value),
+        tiers=tiers,
+        policy_version=value("GATEWAY_POLICY_VERSION") or "1",
+        routellm_enabled=_parse_bool(value("GATEWAY_ROUTELLM_ENABLED"), default=False),
+        routellm_threshold=float(value("GATEWAY_ROUTELLM_THRESHOLD") or "0.5"),
+        routellm_ambiguity_confidence=float(
+            value("GATEWAY_ROUTELLM_AMBIGUITY_CONFIDENCE") or "0.65"
+        ),
+        routellm_checkpoint_path=value("GATEWAY_ROUTELLM_CHECKPOINT_PATH"),
+    )
+
+
+def public_gateway_settings(env_path: Path = Path(".env")) -> dict[str, object]:
+    settings = load_gateway_routing_settings(env_path)
+    file_values = dotenv_values(env_path)
+    tiers: dict[str, object] = {}
+    for tier, config in settings.tiers.items():
+        key_name = config.api_key_env
+        configured = bool(key_name and (environ.get(key_name) or file_values.get(key_name)))
+        tiers[tier.value] = {
+            "enabled": config.enabled,
+            "provider": config.provider.value,
+            "base_url": str(config.base_url) if config.base_url else None,
+            "model": config.model,
+            "context_length": config.context_length,
+            "api_key_configured": configured,
+            "api_key_env": key_name,
+        }
+    return {
+        "mode": settings.mode.value,
+        "tiers": tiers,
+        "routellm_enabled": settings.routellm_enabled,
+        "routellm_threshold": settings.routellm_threshold,
+    }
+
+
+def save_gateway_settings(
+    value: GatewaySettingsInput,
+    env_path: Path = Path(".env"),
+) -> dict[str, object]:
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.touch(exist_ok=True)
+    path = str(env_path)
+    set_key(path, "GATEWAY_ROUTING_MODE", value.mode.value)
+    set_key(path, "GATEWAY_ROUTELLM_ENABLED", str(value.routellm_enabled).lower())
+    set_key(path, "GATEWAY_ROUTELLM_THRESHOLD", str(value.routellm_threshold))
+    for tier, config in value.tiers.items():
+        prefix = f"GATEWAY_{tier.value.upper()}"
+        key_name = TIER_API_KEY_ENV[tier]
+        set_key(path, f"{prefix}_ENABLED", str(config.enabled).lower())
+        set_key(path, f"{prefix}_PROVIDER", config.provider.value)
+        set_key(path, f"{prefix}_BASE_URL", str(config.base_url).rstrip("/"))
+        set_key(path, f"{prefix}_MODEL", config.model)
+        set_key(path, f"{prefix}_CONTEXT_LENGTH", str(config.context_length))
+        if config.api_key_action == "replace":
+            assert config.api_key is not None
+            set_key(path, f"{prefix}_API_KEY_ENV", key_name)
+            set_key(path, key_name, config.api_key.get_secret_value())
+        elif config.api_key_action == "clear":
+            unset_key(path, f"{prefix}_API_KEY_ENV")
+            unset_key(path, key_name)
+    return public_gateway_settings(env_path)
 
 
 def public_settings(settings: WorkerSettings) -> dict[str, object]:

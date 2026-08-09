@@ -157,6 +157,14 @@ class GenerationMetadata(StrictModel):
     response_format_mode: JsonMode
     finish_reason: str | None = None
     usage: dict[str, int] = Field(default_factory=dict)
+    time_to_first_token_ms: float | None = Field(default=None, ge=0)
+    function_calls: list["FunctionCallMetadata"] = Field(default_factory=list)
+
+
+class FunctionCallMetadata(StrictModel):
+    call_id: str
+    name: str
+    arguments: str
 
 
 class ResponseAttempt(StrictModel):

@@ -69,6 +69,38 @@ Every mode is parsed and validated locally. Invalid JSON or schema output may re
 repair attempt with the same provider and model. HTTP 402, 404, 429, 5xx, refusal, timeout, and
 transport failures stop the run; they never select a different model.
 
+## Canonical provider contract
+
+The v2 provider layer defines typed requests, results, capabilities, and ordered events. Streaming
+providers emit `started`, zero or more `text_delta` events, one `usage` event, and `completed`, with
+contiguous sequence numbers. Ollama NDJSON and OpenAI-compatible SSE are read incrementally;
+closing either generator closes the underlying HTTP stream and does not create completed metadata.
+
+The legacy `chat()` method remains available and aggregates the same stream events into its
+original string result. The canonical adapter refuses stream or JSON-mode values that differ from
+the active provider settings instead of silently ignoring them. Provider registration and model
+metadata are centralized without a hardcoded table of routing model names.
+
+## Local Responses API subset
+
+`POST /v1/responses` accepts strict text input/messages, separate instructions, reasoning settings,
+function tools, tool choice, output limits, `store`, and `previous_response_id`. Non-stream function
+calls are normalized from both Ollama and OpenAI-compatible formats into Responses
+`function_call` output items. Text streaming emits ordered Responses SSE events; provider failures
+after HTTP 200 emit `response.failed`.
+
+The intentionally unsupported combinations are multimodal input and streaming function tools.
+They return explicit request errors rather than being ignored or silently buffered. Stored response
+context is bounded process-local memory with a 15-minute TTL and is not written to disk.
+
+## Virtual models
+
+The public model catalog contains four stable aliases: `local-code-worker/auto`, `/local`, `/mid`,
+and `/strong`. The admin `/api/models` endpoint continues to discover physical provider models.
+Unknown public aliases are rejected by both generation APIs. Before the deterministic router is
+enabled, every alias uses the active legacy provider/model; `/local`, `/mid`, and `/strong` already
+resolve typed forced-tier metadata but do not change the physical target.
+
 ## Data boundary
 
 An external provider receives all source text explicitly listed in the task's `allowed_files` and

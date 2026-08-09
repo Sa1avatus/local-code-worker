@@ -1,10 +1,16 @@
 import json
 import os
+import sqlite3
 import tempfile
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from .models import GenerationMetadata, ResponseAttempt, ResponseStatus
+from .routing.models import RoutingPlan
+from .telemetry.database import TelemetryDatabase
+from .telemetry.models import ModelRequestTelemetry, TokenUsage, UsageProvenance
 
 _LOCK = threading.Lock()
 _MAX_EVENTS = 10_000
@@ -17,6 +23,15 @@ def statistics_path() -> Path:
     if os.environ.get("LOCAL_CODE_WORKER_CONTAINER") == "1":
         return Path("/data/model-statistics.json")
     return Path(".local-worker/model-statistics.json")
+
+
+def telemetry_database_path() -> Path:
+    configured = os.environ.get("LOCAL_CODE_WORKER_TELEMETRY_PATH")
+    if configured:
+        return Path(configured)
+    if os.environ.get("LOCAL_CODE_WORKER_CONTAINER") == "1":
+        return Path("/data/local-code-worker.db")
+    return Path(".local-worker/local-code-worker.db")
 
 
 def record_model_call(
@@ -42,6 +57,8 @@ def record_model_call(
         events = _load_events(target)
         events.append(event)
         _write_events(target, events[-_MAX_EVENTS:])
+    if path is None:
+        _record_generation_telemetry(metadata, outcome)
 
 
 def summarize_model_calls(path: Path | None = None) -> dict[str, object]:
@@ -89,6 +106,34 @@ def summarize_model_calls(path: Path | None = None) -> dict[str, object]:
     return {"models": sorted(models, key=lambda item: str(item["model"]))}
 
 
+def summarize_v2_statistics(
+    baseline_cloud_tokens: int | None = None,
+    *,
+    path: Path | None = None,
+) -> dict[str, object]:
+    database = TelemetryDatabase(path or telemetry_database_path())
+    database.initialize()
+    savings = (
+        database.estimate_cloud_token_savings(baseline_cloud_tokens)
+        if baseline_cloud_tokens is not None
+        else None
+    )
+    return {
+        "version": 2,
+        "requests": database.summarize_requests().model_dump(mode="json"),
+        "token_savings": savings.model_dump(mode="json") if savings is not None else None,
+    }
+
+
+def record_routing_plan(request_id: str, plan: RoutingPlan) -> None:
+    try:
+        database = TelemetryDatabase(telemetry_database_path())
+        database.initialize()
+        database.record_routing_plan(request_id, plan)
+    except (OSError, sqlite3.Error):
+        return
+
+
 def record_worker_attempt(attempt: ResponseAttempt, path: Path | None = None) -> None:
     if attempt.provider is None or attempt.model is None:
         return
@@ -106,6 +151,8 @@ def record_worker_attempt(attempt: ResponseAttempt, path: Path | None = None) ->
         events = _load_events(target)
         events.append(event)
         _write_events(target, events[-_MAX_EVENTS:])
+    if path is None:
+        _record_attempt_telemetry(attempt)
 
 
 def _load_events(path: Path) -> list[dict[str, object]]:
@@ -128,3 +175,70 @@ def _write_events(path: Path, events: list[dict[str, object]]) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _record_generation_telemetry(metadata: GenerationMetadata, outcome: str) -> None:
+    usage = metadata.usage
+    has_provider_usage = "prompt_tokens" in usage or "completion_tokens" in usage
+    telemetry = ModelRequestTelemetry(
+        request_id=uuid4().hex,
+        timestamp=metadata.completed_at,
+        provider=metadata.provider.value,
+        model=metadata.model,
+        tier="local" if metadata.provider.value == "ollama" else "cloud",
+        usage=TokenUsage(
+            input_tokens=int(usage.get("prompt_tokens", 0)),
+            output_tokens=int(usage.get("completion_tokens", 0)),
+            cached_input_tokens=int(usage.get("cached_tokens", 0)),
+            reasoning_tokens=int(usage.get("reasoning_tokens", 0)),
+            provenance=(
+                UsageProvenance.EXACT if has_provider_usage else UsageProvenance.UNAVAILABLE
+            ),
+        ),
+        latency_ms=metadata.duration_seconds * 1000,
+        success=outcome == "completed",
+        failure_type=None if outcome == "completed" else outcome,
+    )
+    try:
+        database = TelemetryDatabase(telemetry_database_path())
+        database.initialize()
+        database.record_request(telemetry)
+    except (OSError, sqlite3.Error):
+        return
+
+
+def _record_attempt_telemetry(attempt: ResponseAttempt) -> None:
+    if attempt.provider is None or attempt.model is None:
+        return
+    usage = attempt.usage
+    has_provider_usage = "prompt_tokens" in usage or "completion_tokens" in usage
+    telemetry = ModelRequestTelemetry(
+        request_id=uuid4().hex,
+        timestamp=datetime.now(UTC).isoformat(),
+        provider=attempt.provider.value,
+        model=attempt.model,
+        tier="local" if attempt.provider.value == "ollama" else "cloud",
+        usage=TokenUsage(
+            input_tokens=int(usage.get("prompt_tokens", 0)),
+            output_tokens=int(usage.get("completion_tokens", 0)),
+            cached_input_tokens=int(usage.get("cached_tokens", 0)),
+            reasoning_tokens=int(usage.get("reasoning_tokens", 0)),
+            provenance=(
+                UsageProvenance.EXACT if has_provider_usage else UsageProvenance.UNAVAILABLE
+            ),
+        ),
+        latency_ms=attempt.duration_seconds * 1000,
+        retry_count=max(attempt.attempt - 1, 0),
+        success=attempt.status is ResponseStatus.VALID,
+        failure_type=(
+            None
+            if attempt.status is ResponseStatus.VALID
+            else attempt.error_category or attempt.status.value
+        ),
+    )
+    try:
+        database = TelemetryDatabase(telemetry_database_path())
+        database.initialize()
+        database.record_request(telemetry)
+    except (OSError, sqlite3.Error):
+        return

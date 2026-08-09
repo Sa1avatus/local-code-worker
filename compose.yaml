@@ -2,6 +2,8 @@ services:
   worker:
     build:
       context: .
+      args:
+        INSTALL_ROUTELLM: ${INSTALL_ROUTELLM:-0}
     image: local-code-worker:latest
     container_name: local-code-worker-web
     gpus: all

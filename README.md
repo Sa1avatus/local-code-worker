@@ -32,8 +32,10 @@ write-only in the browser and persist in `/data/.env` inside the `local-code-wor
 volume. The UI and API never return their values.
 
 The current UI also aggregates local per-model request counts, token counts, generation speed, and
-Worker proposal outcomes. Statistics persist in `/data/model-statistics.json`; they contain no
-prompt, source text, or credential values.
+Worker proposal outcomes. The legacy UI statistics persist in `/data/model-statistics.json`.
+Additive v2 telemetry persists in `/data/local-code-worker.db` using SQLite; standalone runs use
+`.local-worker/local-code-worker.db`. Set `LOCAL_CODE_WORKER_TELEMETRY_PATH` to override that path.
+Neither store contains prompts, source text, response bodies, filesystem paths, or credentials.
 
 The container:
 
@@ -93,8 +95,27 @@ The running web service provides:
 ```text
 GET  http://127.0.0.1:8765/v1/models
 POST http://127.0.0.1:8765/v1/chat/completions
+POST http://127.0.0.1:8765/v1/responses
 GET  http://127.0.0.1:8765/api/statistics
+GET  http://127.0.0.1:8765/api/v2/statistics
 ```
+
+`/api/v2/statistics` returns request/token/latency aggregates. Add the optional non-negative query
+parameter `baseline_cloud_tokens` to receive estimated token savings calculated with the explicitly
+named `explicit_cloud_token_budget` method. Without that parameter, `token_savings` is `null`. The
+legacy `/api/statistics` response remains unchanged.
+
+The local Responses endpoint supports strict text input, instructions, reasoning settings,
+non-stream function tools, non-stream JSON responses, ordered text SSE, and bounded process-local
+`previous_response_id` state. Set `store: true` to make a response available for continuation.
+Stored context expires after 15 minutes and is never written to telemetry or disk. Streaming
+function tools and multimodal input are rejected explicitly.
+
+`GET /v1/models` exposes only the stable aliases `local-code-worker/auto`,
+`local-code-worker/local`, `local-code-worker/mid`, and `local-code-worker/strong`. Physical models
+remain available through the local admin endpoint `GET /api/models`. Until routing is enabled, all
+four aliases execute on the active legacy `LLM_PROVIDER`/`LLM_MODEL`; forced tier metadata is
+resolved but does not silently select another provider.
 
 Containers on `local-code-worker-network` use `http://local-code-worker-web:8765/v1`. Local gateway
 access does not require a key; clients that require one may send the non-secret value

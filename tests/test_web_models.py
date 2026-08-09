@@ -6,9 +6,11 @@ from pydantic import ValidationError
 from local_code_worker.web_config import (
     initialize_container_settings,
     load_public_settings,
+    public_gateway_settings,
+    save_gateway_settings,
     save_provider_settings,
 )
-from local_code_worker.web_models import ProviderSettingsInput
+from local_code_worker.web_models import GatewaySettingsInput, ProviderSettingsInput
 
 
 def input_settings(**overrides: object) -> ProviderSettingsInput:
@@ -159,3 +161,62 @@ def test_container_defaults_use_host_ollama(
     assert public["base_url"] == "http://host.docker.internal:11434/"
     assert public["api_key_configured"] is False
     assert public["api_key_env"] is None
+
+
+def test_save_gateway_settings_round_trips_three_tiers_without_exposing_secret(
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / ".env"
+    secret = "STRONG-CLOUD-SECRET"
+    value = GatewaySettingsInput.model_validate(
+        {
+            "mode": "router",
+            "tiers": {
+                "local": {
+                    "provider": "ollama",
+                    "base_url": "http://localhost:11434",
+                    "model": "local-reasoner",
+                    "context_length": 16384,
+                },
+                "mid": {
+                    "provider": "ollama",
+                    "base_url": "http://localhost:11434",
+                    "model": "local-executor",
+                    "context_length": 32768,
+                },
+                "strong": {
+                    "provider": "openai-compatible",
+                    "base_url": "https://cloud.example/v1",
+                    "model": "cloud-strong",
+                    "context_length": 65536,
+                    "api_key_action": "replace",
+                    "api_key": secret,
+                },
+            },
+        }
+    )
+
+    result = save_gateway_settings(value, env_path)
+
+    assert set(result["tiers"]) == {"local", "mid", "strong"}
+    assert result["tiers"]["strong"]["api_key_configured"] is True
+    assert secret not in str(result)
+    assert secret not in str(public_gateway_settings(env_path))
+    assert secret in env_path.read_text(encoding="utf-8")
+
+
+def test_gateway_settings_require_all_three_tiers() -> None:
+    with pytest.raises(ValidationError, match="LOCAL, MID, and STRONG"):
+        GatewaySettingsInput.model_validate(
+            {
+                "mode": "router",
+                "tiers": {
+                    "local": {
+                        "provider": "ollama",
+                        "base_url": "http://localhost:11434",
+                        "model": "local",
+                        "context_length": 16384,
+                    }
+                },
+            }
+        )

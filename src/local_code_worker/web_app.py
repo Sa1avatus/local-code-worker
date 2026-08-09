@@ -8,19 +8,40 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import chain
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
-from pydantic import ValidationError
+from dotenv import dotenv_values
+from pydantic import SecretStr, ValidationError
 
 from .config import WorkerSettings
 from .exceptions import ProviderError, WorkerError
 from .models import JsonMode, ProviderName
 from .providers import create_provider
+from .providers.adapter import CanonicalProviderAdapter
+from .providers.base import ProviderMessage
 from .providers.ollama import OllamaProvider
+from .responses.adapter import adapt_response_request
+from .responses.builder import build_response
+from .responses.schemas import (
+    ResponseCreateRequest,
+    ResponseErrorDetail,
+    ResponseObject,
+)
+from .responses.state import ResponseStateStore
+from .responses.streaming import ResponseStreamEvent, encode_sse, map_provider_events
+from .routing.gateway import resolve_gateway_route
+from .routing.routellm_adapter import ROUTELLM_BACKENDS
 from .system_metrics import read_system_metrics
-from .usage_statistics import record_model_call, summarize_model_calls
+from .usage_statistics import (
+    record_model_call,
+    record_routing_plan,
+    summarize_model_calls,
+    summarize_v2_statistics,
+)
+from .virtual_models import VIRTUAL_MODEL_REGISTRY
 from .web_config import (
     initialize_container_settings,
+    load_gateway_routing_settings,
     load_public_settings,
     load_web_worker_settings,
     save_provider_settings,
@@ -28,6 +49,7 @@ from .web_config import (
 from .web_models import ProviderSettingsInput, validate_model_name
 
 MAX_REQUEST_BYTES = 64 * 1024
+RESPONSE_STATE = ResponseStateStore()
 LOCAL_HOSTS = {
     "localhost",
     "127.0.0.1",
@@ -105,20 +127,23 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         return load_web_worker_settings(self.env_path)
 
     def _openai_models(self) -> None:
-        names = create_provider(self._settings()).list_models()
         self._send_json(
             HTTPStatus.OK,
             {
                 "object": "list",
                 "data": [
-                    {"id": name, "object": "model", "created": 0, "owned_by": "local"}
-                    for name in names
-                    if name
+                    {
+                        "id": model.id,
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "local-code-worker",
+                    }
+                    for model in VIRTUAL_MODEL_REGISTRY.list_models()
                 ],
             },
         )
 
-    def _chat_request(self) -> tuple[WorkerSettings, list[dict[str, str]], bool]:
+    def _chat_request(self) -> tuple[WorkerSettings, list[dict[str, str]], bool, str]:
         payload = self._read_json()
         raw_messages = payload.get("messages")
         if not isinstance(raw_messages, list) or not raw_messages:
@@ -136,8 +161,11 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             messages.append({"role": role, "content": content})
 
         settings = self._settings()
-        model = validate_model_name(str(payload.get("model") or settings.llm_model))
-        updates: dict[str, object] = {"llm_model": model, "llm_stream": False}
+        model = validate_model_name(
+            str(payload.get("model") or "local-code-worker/auto")
+        )
+        virtual_model = VIRTUAL_MODEL_REGISTRY.resolve(model)
+        updates: dict[str, object] = {"llm_stream": False}
         temperature = payload.get("temperature")
         if temperature is not None:
             if not isinstance(temperature, (int, float)) or isinstance(temperature, bool):
@@ -167,10 +195,10 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         stream = payload.get("stream", False)
         if not isinstance(stream, bool):
             raise ValueError("stream must be a boolean")
-        return settings.model_copy(update=updates), messages, stream
+        return settings.model_copy(update=updates), messages, stream, virtual_model.id
 
     def _chat_completion(self) -> None:
-        settings, messages, stream = self._chat_request()
+        settings, messages, stream, public_model = self._chat_request()
         provider = create_provider(settings)
         content = provider.chat(
             messages,
@@ -195,7 +223,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                     "id": completion_id,
                     "object": "chat.completion.chunk",
                     "created": created,
-                    "model": settings.llm_model,
+                    "model": public_model,
                     "choices": [
                         {
                             "index": 0,
@@ -208,7 +236,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                     "id": completion_id,
                     "object": "chat.completion.chunk",
                     "created": created,
-                    "model": settings.llm_model,
+                    "model": public_model,
                     "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                 },
             ]
@@ -228,7 +256,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 "id": completion_id,
                 "object": "chat.completion",
                 "created": created,
-                "model": settings.llm_model,
+                "model": public_model,
                 "choices": [
                     {
                         "index": 0,
@@ -240,8 +268,143 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def _response(self) -> None:
+        request = ResponseCreateRequest.model_validate(self._read_json())
+        virtual_model = VIRTUAL_MODEL_REGISTRY.resolve(request.model)
+        if request.tools and request.stream:
+            raise ValueError("streaming function tools are not supported yet")
+        settings = self._settings().model_copy(update={"llm_stream": request.stream})
+        provider_request = adapt_response_request(
+            request,
+            max_output_characters=settings.llm_max_output_characters,
+            json_mode=settings.llm_json_mode,
+        )
+        if request.previous_response_id is not None:
+            previous_messages = RESPONSE_STATE.get(request.previous_response_id)
+            provider_request = provider_request.model_copy(
+                update={"messages": previous_messages + provider_request.messages}
+            )
+        response_id = f"resp_{uuid.uuid4().hex}"
+        routing_settings = load_gateway_routing_settings(self.env_path)
+        routellm_backend = (
+            ROUTELLM_BACKENDS.get(routing_settings.routellm_checkpoint_path)
+            if routing_settings.routellm_enabled
+            else None
+        )
+        settings, routing_plan = resolve_gateway_route(
+            provider_request,
+            virtual_model.id,
+            settings,
+            routing_settings,
+            routellm_backend,
+        )
+        if settings.llm_api_key_env:
+            secret = dotenv_values(self.env_path).get(settings.llm_api_key_env)
+            if secret:
+                settings = settings.model_copy(update={"llm_api_key": SecretStr(str(secret))})
+        record_routing_plan(response_id, routing_plan)
+        provider = create_provider(settings)
+        message_id = f"msg_{uuid.uuid4().hex}"
+        created_at = int(time.time())
+        if not request.stream:
+            result = CanonicalProviderAdapter(provider).complete(provider_request)
+            record_model_call(
+                provider.last_generation_metadata,
+                kind="response",
+                outcome="completed",
+            )
+            self._send_json(
+                HTTPStatus.OK,
+                build_response(
+                    result,
+                    response_id=response_id,
+                    message_id=message_id,
+                    created_at=created_at,
+                    model=virtual_model.id,
+                ).model_dump(mode="json", exclude_none=True),
+            )
+            if request.store:
+                RESPONSE_STATE.put(
+                    response_id,
+                    provider_request.messages
+                    + [ProviderMessage(role="assistant", content=result.content)],
+                )
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        provider_events = provider.stream(provider_request)
+        last_sequence = -1
+        completed_response = None
+        try:
+            try:
+                for event in map_provider_events(
+                    provider_events,
+                    provider=settings.llm_provider,
+                    model=virtual_model.id,
+                    response_id=response_id,
+                    message_id=message_id,
+                    created_at=created_at,
+                ):
+                    last_sequence = event.sequence_number
+                    if event.type == "response.completed":
+                        completed_response = event.response
+                    self.wfile.write(encode_sse(event))
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except (ProviderError, WorkerError, ValidationError, ValueError, OSError) as error:
+                failed = ResponseObject(
+                    id=response_id,
+                    created_at=created_at,
+                    status="failed",
+                    model=request.model,
+                    output=[],
+                    output_text="",
+                    error=ResponseErrorDetail(
+                        message=str(error),
+                        type="server_error",
+                    ),
+                )
+                self.wfile.write(
+                    encode_sse(
+                        ResponseStreamEvent(
+                            type="response.failed",
+                            sequence_number=last_sequence + 1,
+                            response=failed,
+                        )
+                    )
+                )
+                self.wfile.flush()
+                return
+        finally:
+            close = getattr(provider_events, "close", None)
+            if close is not None:
+                close()
+        if completed_response is not None:
+            record_model_call(
+                provider.last_generation_metadata,
+                kind="response",
+                outcome="completed",
+            )
+        if request.store and completed_response is not None:
+            RESPONSE_STATE.put(
+                response_id,
+                provider_request.messages
+                + [
+                    ProviderMessage(
+                        role="assistant",
+                        content=completed_response.output_text,
+                    )
+                ],
+            )
+
     def do_GET(self) -> None:
-        if self.path == "/":
+        request_url = urlsplit(self.path)
+        if request_url.path == "/":
             body = INDEX_HTML.encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -254,14 +417,14 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.FORBIDDEN, {"error": "Local requests only"})
             return
         try:
-            if self.path == "/api/settings":
+            if request_url.path == "/api/settings":
                 self._send_json(HTTPStatus.OK, load_public_settings(self.env_path))
                 return
-            if self.path == "/api/models":
+            if request_url.path == "/api/models":
                 models = create_provider(self._settings()).list_models()
                 self._send_json(HTTPStatus.OK, {"models": models})
                 return
-            if self.path == "/api/runtime":
+            if request_url.path == "/api/runtime":
                 settings = self._settings()
                 provider = create_provider(settings)
                 models = provider.running_models() if isinstance(provider, OllamaProvider) else []
@@ -270,17 +433,25 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                     {"provider": settings.llm_provider.value, "models": models},
                 )
                 return
-            if self.path == "/api/system":
+            if request_url.path == "/api/system":
                 self._send_json(HTTPStatus.OK, read_system_metrics())
                 return
-            if self.path == "/api/statistics":
+            if request_url.path == "/api/statistics":
                 self._send_json(HTTPStatus.OK, summarize_model_calls())
                 return
-            if self.path == "/api/health":
+            if request_url.path == "/api/v2/statistics":
+                query = parse_qs(request_url.query)
+                raw_baseline = query.get("baseline_cloud_tokens", [None])[-1]
+                baseline = int(raw_baseline) if raw_baseline is not None else None
+                if baseline is not None and baseline < 0:
+                    raise ValueError("baseline_cloud_tokens must be non-negative")
+                self._send_json(HTTPStatus.OK, summarize_v2_statistics(baseline))
+                return
+            if request_url.path == "/api/health":
                 health = create_provider(self._settings()).check_connection()
                 self._send_json(HTTPStatus.OK, health.model_dump())
                 return
-            if self.path == "/v1/models":
+            if request_url.path == "/v1/models":
                 self._openai_models()
                 return
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -311,6 +482,15 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         if self.path == "/v1/chat/completions":
             try:
                 self._chat_completion()
+            except (ProviderError, WorkerError, ValidationError, ValueError, OSError) as error:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": {"message": str(error), "type": "invalid_request_error"}},
+                )
+            return
+        if self.path == "/v1/responses":
+            try:
+                self._response()
             except (ProviderError, WorkerError, ValidationError, ValueError, OSError) as error:
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,

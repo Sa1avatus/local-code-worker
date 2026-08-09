@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from urllib.parse import urlsplit, urlunsplit
 
@@ -8,10 +9,42 @@ import httpx
 
 from ..config import WorkerSettings
 from ..exceptions import ProviderConfigurationError, ProviderError
-from ..models import GenerationMetadata, JsonMode, ProviderHealth, ProviderName
+from ..models import (
+    FunctionCallMetadata,
+    GenerationMetadata,
+    JsonMode,
+    ProviderHealth,
+    ProviderName,
+)
+from ..telemetry.models import TokenUsage, UsageProvenance
+from .base import (
+    ProviderCapabilities,
+    ProviderCapability,
+    ProviderCompletedEvent,
+    ProviderEvent,
+    ProviderFunctionTool,
+    ProviderFunctionToolChoice,
+    ProviderMessage,
+    ProviderRequest,
+    ProviderStartedEvent,
+    ProviderTextDeltaEvent,
+    ProviderUsageEvent,
+)
 
 
 class OpenAICompatibleProvider:
+    capabilities = ProviderCapabilities(
+        supported=frozenset(
+            {
+                ProviderCapability.STREAMING,
+                ProviderCapability.JSON_OBJECT,
+                ProviderCapability.JSON_SCHEMA,
+                ProviderCapability.USAGE,
+                ProviderCapability.FUNCTION_TOOLS,
+            }
+        )
+    )
+
     def __init__(self, settings: WorkerSettings, transport: httpx.BaseTransport | None = None):
         self.settings = settings
         self.transport = transport
@@ -114,6 +147,8 @@ class OpenAICompatibleProvider:
         response_schema: dict[str, object] | None,
         max_output_characters: int,
         max_output_tokens: int | None = None,
+        tools: list[ProviderFunctionTool] | None = None,
+        tool_choice: str | ProviderFunctionToolChoice = "auto",
     ) -> str:
         mode = self._effective_json_mode()
         try:
@@ -123,6 +158,8 @@ class OpenAICompatibleProvider:
                 max_output_characters,
                 max_output_tokens,
                 mode,
+                tools,
+                tool_choice,
             )
         except _UnsupportedResponseFormat:
             if self.settings.llm_json_mode is not JsonMode.AUTO:
@@ -133,6 +170,8 @@ class OpenAICompatibleProvider:
                 max_output_characters,
                 max_output_tokens,
                 JsonMode.PROMPT_ONLY,
+                tools,
+                tool_choice,
             )
 
     def _chat_once(
@@ -142,37 +181,44 @@ class OpenAICompatibleProvider:
         limit: int,
         max_output_tokens: int | None,
         mode: JsonMode,
+        tools: list[ProviderFunctionTool] | None,
+        tool_choice: str | ProviderFunctionToolChoice,
     ) -> str:
-        request_body: dict[str, object] = {
-            "model": self.settings.llm_model,
-            "messages": messages,
-            "temperature": self.settings.llm_temperature,
-            "stream": self.settings.llm_stream,
-        }
-        if max_output_tokens is not None:
-            request_body["max_tokens"] = max_output_tokens
-        if mode is JsonMode.JSON_SCHEMA and response_schema is not None:
-            request_body["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "model_implementation_response",
-                    "strict": True,
-                    "schema": response_schema,
-                },
-            }
-        elif mode is JsonMode.JSON_OBJECT:
-            request_body["response_format"] = {"type": "json_object"}
+        if self.settings.llm_stream:
+            parts: list[str] = []
+            for event in self.stream(
+                ProviderRequest(
+                    messages=[ProviderMessage.model_validate(message) for message in messages],
+                    response_schema=response_schema,
+                    max_output_characters=limit,
+                    max_output_tokens=max_output_tokens,
+                    json_mode=mode,
+                    stream=True,
+                    tools=tools or [],
+                    tool_choice=tool_choice,
+                )
+            ):
+                if isinstance(event, ProviderTextDeltaEvent):
+                    parts.append(event.delta)
+            return "".join(parts)
+
+        request_body = self._request_body(
+            messages,
+            response_schema,
+            max_output_tokens,
+            mode,
+            tools,
+            tool_choice,
+            stream=False,
+        )
 
         started_at = datetime.now(UTC)
         started = time.monotonic()
         try:
             with self._client() as client:
-                if self.settings.llm_stream:
-                    content, finish_reason, usage = self._stream_chat(client, request_body, limit)
-                else:
-                    content, finish_reason, usage = self._non_stream_chat(
-                        client, request_body, limit
-                    )
+                content, finish_reason, usage, function_calls = self._non_stream_chat(
+                    client, request_body, limit
+                )
         except httpx.HTTPStatusError as error:
             if self._is_unsupported_response_format(error.response, request_body):
                 raise _UnsupportedResponseFormat() from error
@@ -206,54 +252,172 @@ class OpenAICompatibleProvider:
             response_format_mode=mode,
             finish_reason=finish_reason,
             usage=usage,
+            function_calls=function_calls,
         )
         return content
 
-    def _stream_chat(
-        self, client: httpx.Client, request_body: dict[str, object], limit: int
-    ) -> tuple[str, str | None, dict[str, int]]:
+    def stream(self, request: ProviderRequest) -> Iterator[ProviderEvent]:
+        if not request.stream:
+            raise ValueError("OpenAI-compatible stream request must enable streaming")
+        if request.tools:
+            raise ProviderError(
+                "OpenAI-compatible streaming function tools are not supported yet",
+                category="unsupported_tools",
+            )
+        messages = [message.model_dump() for message in request.messages]
+        request_body = self._request_body(
+            messages,
+            request.response_schema,
+            request.max_output_tokens,
+            request.json_mode,
+            request.tools,
+            request.tool_choice,
+            stream=True,
+        )
         parts: list[str] = []
         total = 0
         finish_reason: str | None = None
         usage: dict[str, int] = {}
-        with client.stream(
-            "POST", f"{self.base_url}/chat/completions", json=request_body
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if not line.strip() or line.startswith(":"):
-                    continue
-                if not line.startswith("data:"):
-                    raise ProviderError("Malformed SSE line", category="invalid_stream_chunk")
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                    choices = chunk.get("choices", [])
-                    choice = choices[0] if choices else {}
-                    delta = choice.get("delta", {})
-                    text = delta.get("content") or delta.get("refusal") or ""
-                except (ValueError, TypeError, AttributeError) as error:
-                    raise ProviderError(
-                        "Malformed SSE JSON chunk", category="invalid_stream_chunk"
-                    ) from error
-                if not isinstance(text, str):
-                    raise ProviderError("Invalid SSE content", category="invalid_stream_chunk")
-                total += len(text)
-                if total > limit:
-                    raise ProviderError(
-                        f"Provider output exceeds {limit} characters", category="output_limit"
-                    )
-                parts.append(text)
-                if choice.get("finish_reason") is not None:
-                    finish_reason = str(choice["finish_reason"])
-                usage.update(_parse_usage(chunk.get("usage")))
-        return "".join(parts), finish_reason, usage
+        sequence = 0
+        started_at = datetime.now(UTC)
+        started = time.monotonic()
+        first_token_at: float | None = None
+        yield ProviderStartedEvent(
+            sequence=sequence,
+            provider=ProviderName.OPENAI_COMPATIBLE,
+            model=self.settings.llm_model,
+        )
+        sequence += 1
+        try:
+            with self._client() as client:
+                with client.stream(
+                    "POST", f"{self.base_url}/chat/completions", json=request_body
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line.strip() or line.startswith(":"):
+                            continue
+                        if not line.startswith("data:"):
+                            raise ProviderError(
+                                "Malformed SSE line", category="invalid_stream_chunk"
+                            )
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            choices = chunk.get("choices", [])
+                            choice = choices[0] if choices else {}
+                            delta = choice.get("delta", {})
+                            text = delta.get("content") or delta.get("refusal") or ""
+                        except (ValueError, TypeError, AttributeError) as error:
+                            raise ProviderError(
+                                "Malformed SSE JSON chunk",
+                                category="invalid_stream_chunk",
+                            ) from error
+                        if not isinstance(text, str):
+                            raise ProviderError(
+                                "Invalid SSE content", category="invalid_stream_chunk"
+                            )
+                        total += len(text)
+                        if total > request.max_output_characters:
+                            raise ProviderError(
+                                "Provider output exceeds "
+                                f"{request.max_output_characters} characters",
+                                category="output_limit",
+                            )
+                        if text:
+                            if first_token_at is None:
+                                first_token_at = time.monotonic()
+                            parts.append(text)
+                            yield ProviderTextDeltaEvent(sequence=sequence, delta=text)
+                            sequence += 1
+                        if choice.get("finish_reason") is not None:
+                            finish_reason = str(choice["finish_reason"])
+                        usage.update(_parse_usage(chunk.get("usage")))
+        except httpx.HTTPStatusError as error:
+            if self._is_unsupported_response_format(error.response, request_body):
+                raise _UnsupportedResponseFormat() from error
+            raise self._http_error(error.response) from error
+        except httpx.ConnectError as error:
+            raise ProviderError(
+                f"Cannot connect to OpenAI-compatible endpoint {self.base_url}",
+                category="connection",
+            ) from error
+        except httpx.TimeoutException as error:
+            raise ProviderError(
+                "OpenAI-compatible response timed out", category="timeout"
+            ) from error
+        except httpx.TransportError as error:
+            raise ProviderError(
+                "OpenAI-compatible response transport failed",
+                category="transport_error",
+            ) from error
+        completed_at = datetime.now(UTC)
+        self.last_generation_metadata = GenerationMetadata(
+            provider=ProviderName.OPENAI_COMPATIBLE,
+            model=self.settings.llm_model,
+            base_url=self.base_url,
+            started_at=started_at.isoformat(),
+            completed_at=completed_at.isoformat(),
+            duration_seconds=time.monotonic() - started,
+            prompt_characters=sum(len(message["content"]) for message in messages),
+            output_characters=len("".join(parts)),
+            streaming=True,
+            response_format_mode=request.json_mode,
+            finish_reason=finish_reason,
+            usage=usage,
+            time_to_first_token_ms=(
+                (first_token_at - started) * 1000 if first_token_at is not None else None
+            ),
+        )
+        token_usage = TokenUsage(
+            input_tokens=int(usage.get("prompt_tokens", 0)),
+            output_tokens=int(usage.get("completion_tokens", 0)),
+            provenance=(UsageProvenance.EXACT if usage else UsageProvenance.UNAVAILABLE),
+        )
+        yield ProviderUsageEvent(sequence=sequence, usage=token_usage)
+        sequence += 1
+        yield ProviderCompletedEvent(sequence=sequence, finish_reason=finish_reason)
+
+    def _request_body(
+        self,
+        messages: list[dict[str, str]],
+        response_schema: dict[str, object] | None,
+        max_output_tokens: int | None,
+        mode: JsonMode,
+        tools: list[ProviderFunctionTool] | None,
+        tool_choice: str | ProviderFunctionToolChoice,
+        *,
+        stream: bool,
+    ) -> dict[str, object]:
+        request_body: dict[str, object] = {
+            "model": self.settings.llm_model,
+            "messages": messages,
+            "temperature": self.settings.llm_temperature,
+            "stream": stream,
+        }
+        if max_output_tokens is not None:
+            request_body["max_tokens"] = max_output_tokens
+        if mode is JsonMode.JSON_SCHEMA and response_schema is not None:
+            request_body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "model_implementation_response",
+                    "strict": True,
+                    "schema": response_schema,
+                },
+            }
+        elif mode is JsonMode.JSON_OBJECT:
+            request_body["response_format"] = {"type": "json_object"}
+        if tools:
+            request_body["tools"] = [_serialize_function_tool(tool) for tool in tools]
+            request_body["tool_choice"] = _serialize_tool_choice(tool_choice)
+        return request_body
 
     def _non_stream_chat(
         self, client: httpx.Client, request_body: dict[str, object], limit: int
-    ) -> tuple[str, str | None, dict[str, int]]:
+    ) -> tuple[str, str | None, dict[str, int], list[FunctionCallMetadata]]:
         response = client.post(f"{self.base_url}/chat/completions", json=request_body)
         response.raise_for_status()
         try:
@@ -271,7 +435,12 @@ class OpenAICompatibleProvider:
             raise ProviderError(
                 f"Provider output exceeds {limit} characters", category="output_limit"
             )
-        return content, choice.get("finish_reason"), _parse_usage(payload.get("usage"))
+        return (
+            content,
+            choice.get("finish_reason"),
+            _parse_usage(payload.get("usage")),
+            _parse_openai_function_calls(message),
+        )
 
     def _effective_json_mode(self) -> JsonMode:
         return (
@@ -319,3 +488,43 @@ def _parse_usage(raw_usage: object) -> dict[str, int]:
         if isinstance(value, int):
             usage[key] = value
     return usage
+
+
+def _serialize_function_tool(tool: ProviderFunctionTool) -> dict[str, object]:
+    function: dict[str, object] = {
+        "name": tool.name,
+        "parameters": tool.parameters,
+        "strict": tool.strict,
+    }
+    if tool.description is not None:
+        function["description"] = tool.description
+    return {"type": "function", "function": function}
+
+
+def _serialize_tool_choice(choice: str | ProviderFunctionToolChoice) -> object:
+    if isinstance(choice, ProviderFunctionToolChoice):
+        return {"type": "function", "function": {"name": choice.name}}
+    return choice
+
+
+def _parse_openai_function_calls(message: object) -> list[FunctionCallMetadata]:
+    if not isinstance(message, dict) or not isinstance(message.get("tool_calls"), list):
+        return []
+    calls: list[FunctionCallMetadata] = []
+    for raw_call in message["tool_calls"]:
+        if not isinstance(raw_call, dict) or not isinstance(raw_call.get("function"), dict):
+            raise ProviderError("Invalid provider tool call", category="invalid_response")
+        function = raw_call["function"]
+        call_id = raw_call.get("id")
+        name = function.get("name")
+        arguments = function.get("arguments")
+        if not all(isinstance(value, str) for value in (call_id, name, arguments)):
+            raise ProviderError("Invalid provider tool call", category="invalid_response")
+        calls.append(
+            FunctionCallMetadata(
+                call_id=call_id,
+                name=name,
+                arguments=arguments,
+            )
+        )
+    return calls

@@ -21,6 +21,9 @@ dev = [
   "pytest>=8.3,<9",
   "ruff>=0.8,<1",
 ]
+routellm = [
+  "routellm==0.2.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

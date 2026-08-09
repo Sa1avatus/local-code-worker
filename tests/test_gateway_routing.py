@@ -1,0 +1,155 @@
+import pytest
+
+from local_code_worker.config import WorkerSettings
+from local_code_worker.models import ProviderName
+from local_code_worker.providers.base import ProviderMessage, ProviderRequest
+from local_code_worker.routing.gateway import resolve_gateway_route
+from local_code_worker.routing.models import (
+    GatewayRoutingSettings,
+    RoutingMode,
+    TierConfig,
+)
+from local_code_worker.virtual_models import ModelTier
+
+
+class FailingRouteLlmBackend:
+    def score(self, request: ProviderRequest) -> float:
+        raise RuntimeError("unavailable")
+
+
+def request(content: str = "Security review") -> ProviderRequest:
+    return ProviderRequest(
+        messages=[ProviderMessage(role="user", content=content)],
+        max_output_characters=100,
+    )
+
+
+def worker_settings() -> WorkerSettings:
+    return WorkerSettings(
+        llm_provider=ProviderName.OLLAMA,
+        llm_base_url="http://localhost:11434",
+        llm_model="legacy-model",
+    )
+
+
+def test_observe_only_keeps_legacy_execution_settings() -> None:
+    worker = worker_settings()
+    routing = GatewayRoutingSettings(
+        mode=RoutingMode.OBSERVE_ONLY,
+        tiers={
+            ModelTier.STRONG: TierConfig(
+                provider=ProviderName.OLLAMA,
+                model="strong-model",
+            )
+        },
+    )
+
+    selected, plan = resolve_gateway_route(
+        request(),
+        "local-code-worker/auto",
+        worker,
+        routing,
+    )
+
+    assert selected.llm_model == "legacy-model"
+    assert plan.actual.model == "legacy-model"
+    assert plan.hypothetical is not None
+    assert plan.hypothetical.model == "strong-model"
+
+
+def test_router_applies_selected_model_for_configured_provider() -> None:
+    worker = worker_settings()
+    routing = GatewayRoutingSettings(
+        mode=RoutingMode.ROUTER,
+        tiers={
+            ModelTier.STRONG: TierConfig(
+                provider=ProviderName.OLLAMA,
+                model="strong-model",
+            )
+        },
+    )
+
+    selected, plan = resolve_gateway_route(
+        request(),
+        "local-code-worker/auto",
+        worker,
+        routing,
+    )
+
+    assert selected.llm_model == "strong-model"
+    assert plan.actual.model == "strong-model"
+
+
+def test_router_rejects_cross_provider_route_without_instance_configuration() -> None:
+    worker = worker_settings()
+    routing = GatewayRoutingSettings(
+        mode=RoutingMode.ROUTER,
+        tiers={
+            ModelTier.STRONG: TierConfig(
+                provider=ProviderName.OPENAI_COMPATIBLE,
+                model="strong-model",
+            )
+        },
+    )
+
+    with pytest.raises(ValueError, match="provider instance configuration"):
+        resolve_gateway_route(
+            request(),
+            "local-code-worker/auto",
+            worker,
+            routing,
+        )
+
+
+def test_router_applies_complete_cross_provider_tier_configuration() -> None:
+    worker = worker_settings()
+    routing = GatewayRoutingSettings(
+        mode=RoutingMode.ROUTER,
+        tiers={
+            ModelTier.STRONG: TierConfig(
+                provider=ProviderName.OPENAI_COMPATIBLE,
+                base_url="https://cloud.example/v1",
+                model="strong-model",
+                context_length=32_768,
+                api_key_env="STRONG_API_KEY",
+            )
+        },
+    )
+
+    selected, _ = resolve_gateway_route(
+        request(),
+        "local-code-worker/auto",
+        worker,
+        routing,
+    )
+
+    assert selected.llm_provider is ProviderName.OPENAI_COMPATIBLE
+    assert str(selected.llm_base_url) == "https://cloud.example/v1"
+    assert selected.llm_model == "strong-model"
+    assert selected.llm_num_ctx == 32_768
+    assert selected.llm_api_key_env == "STRONG_API_KEY"
+
+
+def test_gateway_uses_deterministic_route_when_routellm_backend_fails() -> None:
+    worker = worker_settings()
+    routing = GatewayRoutingSettings(
+        mode=RoutingMode.ROUTER,
+        routellm_enabled=True,
+        tiers={
+            ModelTier.LOCAL: TierConfig(
+                provider=ProviderName.OLLAMA,
+                model="local-model",
+            )
+        },
+    )
+
+    selected, plan = resolve_gateway_route(
+        request("Implement the requested change"),
+        "local-code-worker/auto",
+        worker,
+        routing,
+        FailingRouteLlmBackend(),
+    )
+
+    assert selected.llm_model == "local-model"
+    assert plan.actual.routing_backend_failure is True
