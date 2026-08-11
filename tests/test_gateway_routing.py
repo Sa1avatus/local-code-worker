@@ -3,9 +3,10 @@ import pytest
 from local_code_worker.config import WorkerSettings
 from local_code_worker.models import ProviderName
 from local_code_worker.providers.base import ProviderMessage, ProviderRequest
-from local_code_worker.routing.gateway import resolve_gateway_route
+from local_code_worker.routing.gateway import resolve_gateway_fallback, resolve_gateway_route
 from local_code_worker.routing.models import (
     GatewayRoutingSettings,
+    RoutingMethod,
     RoutingMode,
     TierConfig,
 )
@@ -153,3 +154,56 @@ def test_gateway_uses_deterministic_route_when_routellm_backend_fails() -> None:
 
     assert selected.llm_model == "local-model"
     assert plan.actual.routing_backend_failure is True
+
+
+def test_auto_defers_cloud_strong_until_local_model_fails() -> None:
+    routing = GatewayRoutingSettings(
+        mode=RoutingMode.ROUTER,
+        tiers={
+            ModelTier.MID: TierConfig(provider=ProviderName.OLLAMA, model="local-reasoner"),
+            ModelTier.STRONG: TierConfig(
+                provider=ProviderName.OPENAI_COMPATIBLE,
+                base_url="https://cloud.example/v1",
+                model="cloud-strong",
+            ),
+        },
+    )
+
+    selected, plan = resolve_gateway_route(
+        request("Perform a security architecture review across multiple services"),
+        "local-code-worker/auto",
+        worker_settings(),
+        routing,
+    )
+
+    assert selected.llm_model == "local-reasoner"
+    assert plan.actual.tier is ModelTier.MID
+    assert "reserved for fallback" in plan.actual.reason
+
+
+def test_runtime_failure_advances_from_local_to_mid_then_strong() -> None:
+    routing = GatewayRoutingSettings(
+        mode=RoutingMode.ROUTER,
+        tiers={
+            ModelTier.LOCAL: TierConfig(provider=ProviderName.OLLAMA, model="local"),
+            ModelTier.MID: TierConfig(provider=ProviderName.OLLAMA, model="mid"),
+            ModelTier.STRONG: TierConfig(
+                provider=ProviderName.OPENAI_COMPATIBLE,
+                base_url="https://cloud.example/v1",
+                model="strong",
+            ),
+        },
+    )
+
+    mid = resolve_gateway_fallback(worker_settings(), routing, ModelTier.LOCAL)
+    assert mid is not None
+    mid_settings, mid_plan = mid
+    strong = resolve_gateway_fallback(worker_settings(), routing, ModelTier.MID)
+    assert strong is not None
+    strong_settings, strong_plan = strong
+
+    assert mid_settings.llm_model == "mid"
+    assert mid_plan.actual.method is RoutingMethod.FALLBACK
+    assert strong_settings.llm_model == "strong"
+    assert strong_plan.actual.provider is ProviderName.OPENAI_COMPATIBLE
+    assert resolve_gateway_fallback(worker_settings(), routing, ModelTier.STRONG) is None

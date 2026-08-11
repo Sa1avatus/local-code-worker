@@ -45,3 +45,19 @@ def test_context_length_is_loaded_saved_and_requires_model_reload() -> None:
     assert "contextLength.value=data.context_length" in INDEX_HTML
     assert "context_length:Number(contextLength.value)" in INDEX_HTML
     assert "ollama stop" in INDEX_HTML
+
+
+def test_routing_ui_configures_all_tiers_through_v2_settings() -> None:
+    assert 'id="routeMode"' in INDEX_HTML
+    assert "tierNames=['local','mid','strong']" in INDEX_HTML
+    assert "jsonFetch('/api/v2/settings')" in INDEX_HTML
+    assert "method:'PUT'" in INDEX_HTML
+    assert "api_key_action:action" in INDEX_HTML
+    assert "loadRouting()" in INDEX_HTML
+
+
+def test_routing_ui_discovers_models_without_inserting_html() -> None:
+    assert 'id="routingModels"' in INDEX_HTML
+    assert "list.replaceChildren()" in INDEX_HTML
+    assert "const option=document.createElement('option')" in INDEX_HTML
+    assert "option.value=name" in INDEX_HTML

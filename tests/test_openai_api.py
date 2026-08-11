@@ -26,6 +26,9 @@ from local_code_worker.telemetry.models import TokenUsage
 
 class FakeProvider:
     calls = []
+    failing_models: set[str] = set()
+    attempted_models: list[str] = []
+    streamed_models: list[str] = []
 
     def __init__(self, settings: WorkerSettings):
         self.settings = settings
@@ -43,6 +46,9 @@ class FakeProvider:
         tools=None,
         tool_choice="auto",
     ):
+        self.attempted_models.append(self.settings.llm_model)
+        if self.settings.llm_model in self.failing_models:
+            raise ProviderError("model failed", category="test_error")
         self.calls.append(messages)
         assert messages[-1]["role"] == "user"
         assert response_schema is None
@@ -76,6 +82,9 @@ class FakeProvider:
         return content
 
     def stream(self, request):
+        self.streamed_models.append(self.settings.llm_model)
+        if self.settings.llm_model in self.failing_models:
+            raise ProviderError("model failed", category="test_error")
         yield ProviderStartedEvent(
             sequence=0,
             provider=ProviderName.OLLAMA,
@@ -102,12 +111,16 @@ class FakeProvider:
 
 
 @pytest.fixture
-def api_server(monkeypatch: pytest.MonkeyPatch):
+def api_server(monkeypatch: pytest.MonkeyPatch, tmp_path):
     settings = WorkerSettings(llm_model="qwen:test")
+    monkeypatch.setattr(web_app.WorkerWebHandler, "env_path", tmp_path / ".env")
     monkeypatch.setattr(web_app.WorkerWebHandler, "_settings", lambda self: settings)
     monkeypatch.setattr(web_app, "create_provider", lambda value: FakeProvider(value))
     monkeypatch.setattr(web_app, "RESPONSE_STATE", ResponseStateStore())
     FakeProvider.calls.clear()
+    FakeProvider.failing_models.clear()
+    FakeProvider.attempted_models.clear()
+    FakeProvider.streamed_models.clear()
     monkeypatch.setattr(web_app, "record_model_call", lambda *args, **kwargs: None)
     monkeypatch.setattr(web_app, "record_routing_plan", lambda *args, **kwargs: None)
     monkeypatch.setattr(web_app, "summarize_model_calls", lambda: {"models": []})
@@ -151,7 +164,7 @@ def test_openai_models_endpoint(api_server: int) -> None:
     status, _, content = request(api_server, "GET", "/v1/models")
     payload = json.loads(content)
 
-    assert status == 200
+    assert status == 200, content
     assert payload["object"] == "list"
     assert [model["id"] for model in payload["data"]] == [
         "local-code-worker/auto",
@@ -167,6 +180,155 @@ def test_admin_models_endpoint_keeps_physical_discovery(api_server: int) -> None
 
     assert status == 200
     assert json.loads(content) == {"models": ["qwen:test", "qwen:other"]}
+
+
+def test_gateway_settings_endpoint_has_editable_defaults(api_server: int) -> None:
+    status, _, content = request(api_server, "GET", "/api/v2/settings")
+    payload = json.loads(content)
+
+    assert status == 200
+    assert set(payload["tiers"]) == {"local", "mid", "strong"}
+    assert all(tier["model"] for tier in payload["tiers"].values())
+
+
+def test_gateway_settings_endpoint_round_trips_without_exposing_secrets(
+    api_server: int,
+) -> None:
+    tiers = {
+        "local": {
+            "enabled": True,
+            "provider": "ollama",
+            "base_url": "http://localhost:11434",
+            "model": "reasoner:latest",
+            "context_length": 32768,
+            "api_key_action": "keep",
+        },
+        "mid": {
+            "enabled": True,
+            "provider": "ollama",
+            "base_url": "http://localhost:11434",
+            "model": "executor:latest",
+            "context_length": 32768,
+            "api_key_action": "keep",
+        },
+        "strong": {
+            "enabled": True,
+            "provider": "openai-compatible",
+            "base_url": "https://cloud.example/v1",
+            "model": "cloud-strong",
+            "context_length": 131072,
+            "api_key_action": "replace",
+            "api_key": "secret-value",
+        },
+    }
+    status, _, content = request(
+        api_server,
+        "PUT",
+        "/api/v2/settings",
+        {
+            "mode": "router",
+            "tiers": tiers,
+            "routellm_enabled": False,
+            "routellm_threshold": 0.5,
+        },
+    )
+    payload = json.loads(content)
+
+    assert status == 200
+    assert payload["mode"] == "router"
+    assert payload["tiers"]["strong"]["api_key_configured"] is True
+    assert "secret-value" not in content
+
+    status, _, content = request(api_server, "GET", "/api/v2/settings")
+
+    assert status == 200
+    assert json.loads(content) == payload
+    assert "secret-value" not in content
+
+
+def test_non_stream_response_falls_back_from_local_to_mid(api_server: int) -> None:
+    tiers = {
+        name: {
+            "enabled": True,
+            "provider": "ollama",
+            "base_url": "http://localhost:11434",
+            "model": model_name,
+            "context_length": 32768,
+            "api_key_action": "keep",
+        }
+        for name, model_name in {
+            "local": "local-fails",
+            "mid": "mid-succeeds",
+            "strong": "strong-unused",
+        }.items()
+    }
+    status, _, _ = request(
+        api_server,
+        "PUT",
+        "/api/v2/settings",
+        {
+            "mode": "router",
+            "tiers": tiers,
+            "routellm_enabled": False,
+            "routellm_threshold": 0.5,
+        },
+    )
+    assert status == 200
+    FakeProvider.failing_models.add("local-fails")
+
+    status, _, content = request(
+        api_server,
+        "POST",
+        "/v1/responses",
+        {"model": "local-code-worker/local", "input": "hello"},
+    )
+
+    assert status == 200, content
+    assert json.loads(content)["output_text"] == "ok"
+    assert FakeProvider.attempted_models == ["local-fails", "mid-succeeds"]
+
+
+def test_stream_response_falls_back_before_first_event(api_server: int) -> None:
+    tiers = {
+        name: {
+            "enabled": True,
+            "provider": "ollama",
+            "base_url": "http://localhost:11434",
+            "model": model_name,
+            "context_length": 32768,
+            "api_key_action": "keep",
+        }
+        for name, model_name in {
+            "local": "local-fails",
+            "mid": "mid-succeeds",
+            "strong": "strong-unused",
+        }.items()
+    }
+    status, _, _ = request(
+        api_server,
+        "PUT",
+        "/api/v2/settings",
+        {
+            "mode": "router",
+            "tiers": tiers,
+            "routellm_enabled": False,
+            "routellm_threshold": 0.5,
+        },
+    )
+    assert status == 200
+    FakeProvider.failing_models.add("local-fails")
+
+    status, content_type, content = request(
+        api_server,
+        "POST",
+        "/v1/responses",
+        {"model": "local-code-worker/local", "input": "hello", "stream": True},
+    )
+
+    assert status == 200, content
+    assert content_type == "text/event-stream; charset=utf-8"
+    assert "event: response.completed" in content
+    assert FakeProvider.streamed_models == ["local-fails", "mid-succeeds"]
 
 
 def test_v2_statistics_accepts_explicit_cloud_baseline(api_server: int) -> None:
@@ -212,9 +374,7 @@ def test_responses_endpoint_streams_ordered_sse(api_server: int) -> None:
         {"model": "local-code-worker/auto", "input": "hello", "stream": True},
     )
     event_names = [
-        line.removeprefix("event: ")
-        for line in content.splitlines()
-        if line.startswith("event: ")
+        line.removeprefix("event: ") for line in content.splitlines() if line.startswith("event: ")
     ]
 
     assert status == 200
@@ -236,9 +396,7 @@ def test_responses_stream_reports_provider_failure_as_sse(api_server: int) -> No
         },
     )
     event_names = [
-        line.removeprefix("event: ")
-        for line in content.splitlines()
-        if line.startswith("event: ")
+        line.removeprefix("event: ") for line in content.splitlines() if line.startswith("event: ")
     ]
     data = [
         json.loads(line.removeprefix("data: "))
@@ -261,9 +419,7 @@ def test_responses_endpoint_returns_non_stream_function_call(api_server: int) ->
         {
             "model": "local-code-worker/auto",
             "input": "hello",
-            "tools": [
-                {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
-            ],
+            "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
         },
     )
 
@@ -291,9 +447,7 @@ def test_responses_endpoint_rejects_streaming_function_tools(api_server: int) ->
             "model": "local-code-worker/auto",
             "input": "hello",
             "stream": True,
-            "tools": [
-                {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
-            ],
+            "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
         },
     )
 
@@ -398,9 +552,7 @@ def test_chat_completions_rejects_invalid_messages(api_server: int) -> None:
 
 
 @pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/responses"])
-def test_generation_endpoints_reject_unknown_virtual_model(
-    api_server: int, path: str
-) -> None:
+def test_generation_endpoints_reject_unknown_virtual_model(api_server: int, path: str) -> None:
     payload = (
         {
             "model": "local-code-worker/unknown",

@@ -67,9 +67,17 @@ def load_gateway_routing_settings(
 
 def public_gateway_settings(env_path: Path = Path(".env")) -> dict[str, object]:
     settings = load_gateway_routing_settings(env_path)
+    legacy = load_web_worker_settings(env_path)
     file_values = dotenv_values(env_path)
     tiers: dict[str, object] = {}
-    for tier, config in settings.tiers.items():
+    for tier in ModelTier:
+        config = settings.tiers.get(tier) or TierConfig(
+            provider=legacy.llm_provider,
+            model=legacy.llm_model,
+            base_url=legacy.llm_base_url,
+            context_length=legacy.llm_num_ctx,
+            api_key_env=TIER_API_KEY_ENV[tier],
+        )
         key_name = config.api_key_env
         configured = bool(key_name and (environ.get(key_name) or file_values.get(key_name)))
         tiers[tier.value] = {

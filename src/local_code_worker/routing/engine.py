@@ -86,6 +86,24 @@ def route_request(
         routellm_score = None
         routing_backend_failure = False
 
+    strong = settings.tiers.get(ModelTier.STRONG)
+    if (
+        virtual_model.forced_tier is None
+        and requested_tier is ModelTier.STRONG
+        and strong is not None
+        and strong.provider.value != "ollama"
+    ):
+        for local_tier in (ModelTier.MID, ModelTier.LOCAL):
+            local_config = settings.tiers.get(local_tier)
+            if (
+                local_config is not None
+                and local_config.enabled
+                and local_config.provider.value == "ollama"
+            ):
+                requested_tier = local_tier
+                reason = f"{reason} Cloud STRONG is reserved for fallback after local failure."
+                break
+
     selected_tier, config = _resolve_available_tier(requested_tier, settings)
     if selected_tier is not requested_tier:
         method = RoutingMethod.FALLBACK
