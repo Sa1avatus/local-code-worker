@@ -1,3 +1,7 @@
+﻿"""Adapt Responses API requests to provider requests with tool support."""
+
+from __future__ import annotations
+
 from ..models import JsonMode
 from ..providers.base import (
     ProviderFunctionTool,
@@ -5,8 +9,32 @@ from ..providers.base import (
     ProviderMessage,
     ProviderRequest,
 )
-from .schemas import ResponseAdditionalTools, ResponseCreateRequest, ResponseFunctionToolChoice
-from .schemas import ResponseFunctionTool, ResponseNamespaceTool, ResponseInputMessage
+from ..tools.models import NormalizedTool, ToolKind, hosted_tool_description, HOSTED_TOOL_SCHEMAS
+from ..tools.normalizer import normalize_request_tools, separate_tools
+from .schemas import (
+    ResponseAdditionalTools,
+    ResponseCreateRequest,
+    ResponseFunctionTool,
+    ResponseFunctionToolChoice,
+    ResponseInputFunctionCall,
+    ResponseInputFunctionCallOutput,
+    ResponseInputMessage,
+    ResponseNamespaceTool,
+)
+
+
+class AdaptedRequest:
+    """Provider request plus metadata about hosted tools."""
+
+    def __init__(
+        self,
+        request: ProviderRequest,
+        hosted_tool_names: frozenset[str],
+        all_normalized: list[NormalizedTool],
+    ) -> None:
+        self.request = request
+        self.hosted_tool_names = hosted_tool_names
+        self.all_normalized = all_normalized
 
 
 def adapt_response_request(
@@ -14,10 +42,21 @@ def adapt_response_request(
     *,
     max_output_characters: int,
     json_mode: JsonMode = JsonMode.NONE,
-) -> ProviderRequest:
+) -> AdaptedRequest:
+    """Convert a Responses API request into a provider request.
+
+    Handles:
+    - function tools (passthrough to model)
+    - namespace tools (expand children)
+    - web_search tools (add as function tool for model, mark as hosted)
+    - additional_tools in input array
+    - function_call / function_call_output in input array
+    """
     messages: list[ProviderMessage] = []
     if request.instructions:
         messages.append(ProviderMessage(role="developer", content=request.instructions))
+
+    # Process input items
     additional_tool_dicts: list[dict[str, object]] = []
     if isinstance(request.input, str):
         messages.append(ProviderMessage(role="user", content=request.input))
@@ -36,54 +75,80 @@ def adapt_response_request(
                         ),
                     )
                 )
-    response_tools: list[ResponseFunctionTool] = []
-    for tool_dict in additional_tool_dicts:
-        if tool_dict.get("type") == "function" and "name" in tool_dict and "parameters" in tool_dict:
-            response_tools.append(
-                ResponseFunctionTool(
-                    name=tool_dict["name"],
-                    description=tool_dict.get("description"),
-                    parameters=tool_dict["parameters"],
-                    strict=tool_dict.get("strict", True),
-                )
-            )
-        elif tool_dict.get("type") == "namespace" and "tools" in tool_dict:
-            for sub_tool in tool_dict["tools"]:
-                if isinstance(sub_tool, dict) and sub_tool.get("type") == "function" and "name" in sub_tool and "parameters" in sub_tool:
-                    response_tools.append(
-                        ResponseFunctionTool(
-                            name=sub_tool["name"],
-                            description=sub_tool.get("description"),
-                            parameters=sub_tool["parameters"],
-                            strict=sub_tool.get("strict", True),
-                        )
+            elif isinstance(item, ResponseInputFunctionCall):
+                # Previous assistant function call — add as assistant message
+                messages.append(
+                    ProviderMessage(
+                        role="assistant",
+                        content=f"[Calling tool: {item.name}({item.arguments})]",
                     )
-    for tool in request.tools:
-        if isinstance(tool, ResponseFunctionTool):
-            response_tools.append(tool)
-        elif isinstance(tool, ResponseNamespaceTool):
-            response_tools.extend(tool.tools)
-    tools = [
-        ProviderFunctionTool(
-            name=tool.name,
-            description=tool.description,
-            parameters=tool.parameters,
-            strict=tool.strict,
+                )
+            elif isinstance(item, ResponseInputFunctionCallOutput):
+                # Tool result from client — add as tool/system message
+                messages.append(
+                    ProviderMessage(
+                        role="tool",
+                        content=item.output,
+                    )
+                )
+
+    # Normalize all tools to identify hosted vs passthrough
+    all_normalized = normalize_request_tools(request)
+
+    # Also normalize additional_tools from input
+    from ..tools.normalizer import normalize_tool_dict
+    for raw_dict in additional_tool_dicts:
+        if isinstance(raw_dict, dict):
+            all_normalized.extend(normalize_tool_dict(raw_dict))
+
+    hosted, passthrough = separate_tools(all_normalized)
+    hosted_names = frozenset(t.name for t in hosted)
+
+    # Build provider tool list: passthrough tools + hosted tools as function tools
+    provider_tools: list[ProviderFunctionTool] = []
+
+    # Add passthrough (function) tools
+    for tool in passthrough:
+        provider_tools.append(
+            ProviderFunctionTool(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
+                strict=tool.metadata.get("strict", True),
+            )
         )
-        for tool in response_tools
-    ]
+
+    # Add hosted tools as function tools so the model can call them
+    for tool in hosted:
+        provider_tools.append(
+            ProviderFunctionTool(
+                name=tool.name,
+                description=tool.description or hosted_tool_description(tool.kind),
+                parameters=HOSTED_TOOL_SCHEMAS.get(tool.kind, tool.parameters),
+                strict=False,
+            )
+        )
+
+    # Handle tool_choice
     tool_choice = (
         ProviderFunctionToolChoice(name=request.tool_choice.name)
         if isinstance(request.tool_choice, ResponseFunctionToolChoice)
         else request.tool_choice
     )
-    return ProviderRequest(
+
+    provider_request = ProviderRequest(
         messages=messages,
         max_output_characters=max_output_characters,
         max_output_tokens=request.max_output_tokens,
         json_mode=json_mode,
         stream=request.stream,
-        tools=tools,
+        tools=provider_tools,
         tool_choice=tool_choice,
         reasoning_effort=request.reasoning.effort if request.reasoning else None,
+    )
+
+    return AdaptedRequest(
+        request=provider_request,
+        hosted_tool_names=hosted_names,
+        all_normalized=all_normalized,
     )

@@ -1,4 +1,4 @@
-from typing import Literal
+﻿from typing import Literal
 
 from pydantic import Field
 
@@ -21,6 +21,23 @@ class ResponseInputMessage(StrictModel):
 class ResponseInputText(StrictModel):
     type: Literal["input_text"] = "input_text"
     text: str
+
+class ResponseInputFunctionCall(StrictModel):
+    """A function call in the input (from previous assistant turn)."""
+
+    type: Literal["function_call"] = "function_call"
+    id: str | None = None
+    call_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    arguments: str
+
+
+class ResponseInputFunctionCallOutput(StrictModel):
+    """A function call result in the input (tool output from client)."""
+
+    type: Literal["function_call_output"] = "function_call_output"
+    call_id: str = Field(min_length=1)
+    output: str
 
 
 class ResponseFunctionTool(StrictModel):
@@ -65,7 +82,7 @@ class ResponseTruncationConfig(StrictModel):
 
 class ResponseCreateRequest(StrictModel):
     model: str = Field(min_length=1)
-    input: str | list[ResponseInputMessage | ResponseAdditionalTools]
+    input: str | list[ResponseInputMessage | ResponseAdditionalTools | ResponseInputFunctionCall | ResponseInputFunctionCallOutput]
     instructions: str | None = None
     tools: list[ResponseFunctionTool | ResponseNamespaceTool | ResponseWebSearchTool] = Field(
         default_factory=list
@@ -147,3 +164,4 @@ class ResponseObject(StrictModel):
     usage: ResponseUsage | None = None
     error: ResponseErrorDetail | None = None
     incomplete_details: dict[str, str | int | float | bool | None] | None = None
+

@@ -24,6 +24,7 @@ from .providers.base import ProviderMessage
 from .providers.ollama import OllamaProvider
 from .request_limits import RequestLimits, load_request_limits
 from .responses.adapter import adapt_response_request
+from .tools.executor import ToolExecutor
 from .responses.builder import build_response
 from .responses.schemas import (
     ResponseCreateRequest,
@@ -420,11 +421,14 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         )
         virtual_model = VIRTUAL_MODEL_REGISTRY.resolve(request.model)
         settings = self._settings().model_copy(update={"llm_stream": request.stream})
-        provider_request = adapt_response_request(
+        adapted = adapt_response_request(
             request,
             max_output_characters=settings.llm_max_output_characters,
             json_mode=settings.llm_json_mode,
         )
+        provider_request = adapted.request
+        hosted_tool_names = adapted.hosted_tool_names
+        tool_executor = ToolExecutor() if hosted_tool_names else None
         route_lease = None
         if request.previous_response_id is not None:
             previous = RESPONSE_STATE.get_stored(request.previous_response_id)
@@ -469,53 +473,94 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         message_id = f"msg_{uuid.uuid4().hex}"
         created_at = int(time.time())
         if not request.stream:
-            while True:
-                try:
-                    result = CanonicalProviderAdapter(provider).complete(provider_request)
+            import json as _json
+            from .providers.base import ProviderFunctionCall as _PFC
+            accumulated_calls: list[_PFC] = []
+            max_tool_rounds = 5
+            for _tool_round in range(max_tool_rounds):
+                while True:
+                    try:
+                        result = CanonicalProviderAdapter(provider).complete(provider_request)
+                        break
+                    except (ProviderError, WorkerError, OSError) as error:
+                        record_model_call(
+                            provider.last_generation_metadata,
+                            kind="response",
+                            outcome="failed",
+                            tier=routing_plan.actual.tier.value,
+                        )
+                        fallback = resolve_gateway_fallback(
+                            settings,
+                            routing_settings,
+                            provider_request,
+                            routing_plan.actual.tier,
+                        )
+                        if fallback is None:
+                            record_routing_plan(response_id, routing_plan)
+                            raise
+                        settings, routing_plan = fallback
+                        if route_lease is not None:
+                            route_lease, escalation = escalate_route_lease(
+                                route_lease,
+                                routing_plan.actual,
+                                escalation_reason_for(error),
+                                request_id=request_id,
+                                response_id=response_id,
+                                max_escalations=routing_settings.max_escalations_per_lease,
+                            )
+                            record_escalation(escalation)
+                            record_route_lease(route_lease)
+                            log_escalation(escalation)
+                            routing_plan = routing_plan.model_copy(
+                                update={
+                                    "actual": routing_plan.actual.model_copy(
+                                        update={"lease_id": route_lease.lease_id}
+                                    )
+                                }
+                            )
+                        settings = self._settings_with_tier_secret(settings)
+                        provider = create_provider(settings)
+                        lease.model = settings.llm_model
+                        lease.route = routing_plan.actual.tier.value
+                        lease.idle_cleanup = (
+                            provider.unload_model if isinstance(provider, OllamaProvider) else None
+                        )
+                # Check for hosted tool calls
+                if not tool_executor or not result.function_calls:
                     break
-                except (ProviderError, WorkerError, OSError) as error:
-                    record_model_call(
-                        provider.last_generation_metadata,
-                        kind="response",
-                        outcome="failed",
-                        tier=routing_plan.actual.tier.value,
+                hosted_calls = [
+                    fc for fc in result.function_calls
+                    if fc.name in hosted_tool_names
+                ]
+                if not hosted_calls:
+                    break
+                # Execute hosted tools and continue conversation
+                accumulated_calls.extend(hosted_calls)
+                for call in hosted_calls:
+                    try:
+                        args = _json.loads(call.arguments) if call.arguments else {}
+                    except _json.JSONDecodeError:
+                        args = {}
+                    tool_output = tool_executor.execute(call.name, args)
+                    provider_request = provider_request.model_copy(
+                        update={
+                            "messages": provider_request.messages + [
+                                ProviderMessage(role="assistant", content=f"[Calling tool: {call.name}]"),
+                                ProviderMessage(role="tool", content=tool_output),
+                            ]
+                        }
                     )
-                    fallback = resolve_gateway_fallback(
-                        settings,
-                        routing_settings,
-                        provider_request,
-                        routing_plan.actual.tier,
-                    )
-                    if fallback is None:
-                        record_routing_plan(response_id, routing_plan)
-                        raise
-                    settings, routing_plan = fallback
-                    if route_lease is not None:
-                        route_lease, escalation = escalate_route_lease(
-                            route_lease,
-                            routing_plan.actual,
-                            escalation_reason_for(error),
-                            request_id=request_id,
-                            response_id=response_id,
-                            max_escalations=routing_settings.max_escalations_per_lease,
-                        )
-                        record_escalation(escalation)
-                        record_route_lease(route_lease)
-                        log_escalation(escalation)
-                        routing_plan = routing_plan.model_copy(
-                            update={
-                                "actual": routing_plan.actual.model_copy(
-                                    update={"lease_id": route_lease.lease_id}
-                                )
-                            }
-                        )
-                    settings = self._settings_with_tier_secret(settings)
-                    provider = create_provider(settings)
-                    lease.model = settings.llm_model
-                    lease.route = routing_plan.actual.tier.value
-                    lease.idle_cleanup = (
-                        provider.unload_model if isinstance(provider, OllamaProvider) else None
-                    )
+                # Loop continues - model sees tool results and generates final answer
+            # Merge accumulated hosted calls with any remaining passthrough calls
+            passthrough_calls = [
+                fc for fc in result.function_calls
+                if fc.name not in hosted_tool_names
+            ]
+            all_calls = accumulated_calls + passthrough_calls
+            if all_calls:
+                result = result.model_copy(
+                    update={"function_calls": all_calls}
+                )
             record_routing_plan(response_id, routing_plan)
             log_routing_decision(
                 request_id=request_id,
@@ -550,7 +595,6 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                     route_lease,
                 )
             return
-
         while True:
             provider_events = iter(provider.stream(provider_request))
             try:

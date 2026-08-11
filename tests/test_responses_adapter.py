@@ -1,4 +1,4 @@
-from test_provider_contracts import FakeLegacyProvider
+﻿from test_provider_contracts import FakeLegacyProvider
 
 from local_code_worker.config import WorkerSettings
 from local_code_worker.models import JsonMode
@@ -27,11 +27,12 @@ def test_response_adapter_preserves_instructions_messages_tools_and_reasoning() 
         }
     )
 
-    provider_request = adapt_response_request(
+    adapted = adapt_response_request(
         response_request,
         max_output_characters=4_000,
         json_mode=JsonMode.JSON_OBJECT,
     )
+    provider_request = adapted.request
 
     assert [(message.role, message.content) for message in provider_request.messages] == [
         ("developer", "Follow project conventions."),
@@ -57,7 +58,7 @@ def test_canonical_adapter_returns_normalized_function_call() -> None:
             ],
         }
     )
-    request = adapt_response_request(
+    adapted = adapt_response_request(
         response_request,
         max_output_characters=100,
         json_mode=JsonMode.JSON_SCHEMA,
@@ -69,7 +70,7 @@ def test_canonical_adapter_returns_normalized_function_call() -> None:
         llm_json_mode=JsonMode.JSON_SCHEMA,
     )
 
-    result = CanonicalProviderAdapter(provider).complete(request)
+    result = CanonicalProviderAdapter(provider).complete(adapted.request)
 
     assert result.content == ""
     assert result.function_calls[0].model_dump() == {
