@@ -22,6 +22,19 @@ from .schemas import (
     ResponseNamespaceTool,
 )
 
+# Core Codex tools that should always be included when present.
+_CORE_TOOL_NAMES = frozenset({
+    "shell_command",
+    "apply_patch",
+    "update_plan",
+    "read_mcp_resource",
+    "list_mcp_resources",
+})
+
+# Default max passthrough tools sent to the model.
+# Local models (14B) struggle with 30+ tools. 8 is a reasonable limit.
+DEFAULT_MAX_PASSTHROUGH_TOOLS = 8
+
 
 class AdaptedRequest:
     """Provider request plus metadata about hosted tools."""
@@ -37,16 +50,48 @@ class AdaptedRequest:
         self.all_normalized = all_normalized
 
 
+def _filter_passthrough_tools(
+    tools: list[NormalizedTool],
+    max_tools: int,
+) -> list[NormalizedTool]:
+    """Filter passthrough tools to a manageable count.
+
+    Strategy:
+    1. Always include core Codex tools (shell_command, apply_patch, etc.)
+    2. Fill remaining slots with other tools in original order
+    3. This ensures the model sees the most important tools first
+    """
+    if len(tools) <= max_tools:
+        return tools
+
+    core: list[NormalizedTool] = []
+    other: list[NormalizedTool] = []
+    for tool in tools:
+        if tool.name in _CORE_TOOL_NAMES:
+            core.append(tool)
+        else:
+            other.append(tool)
+
+    # Core tools always included, fill remaining with others
+    remaining = max_tools - len(core)
+    if remaining < 0:
+        # More core tools than limit — just take the first max_tools
+        return core[:max_tools]
+
+    return core + other[:remaining]
+
+
 def adapt_response_request(
     request: ResponseCreateRequest,
     *,
     max_output_characters: int,
     json_mode: JsonMode = JsonMode.NONE,
+    max_passthrough_tools: int = DEFAULT_MAX_PASSTHROUGH_TOOLS,
 ) -> AdaptedRequest:
     """Convert a Responses API request into a provider request.
 
     Handles:
-    - function tools (passthrough to model)
+    - function tools (passthrough to model, filtered to limit)
     - namespace tools (expand children)
     - web_search tools (add as function tool for model, mark as hosted)
     - additional_tools in input array
@@ -76,7 +121,6 @@ def adapt_response_request(
                     )
                 )
             elif isinstance(item, ResponseInputFunctionCall):
-                # Previous assistant function call — add as assistant message
                 messages.append(
                     ProviderMessage(
                         role="assistant",
@@ -84,7 +128,6 @@ def adapt_response_request(
                     )
                 )
             elif isinstance(item, ResponseInputFunctionCallOutput):
-                # Tool result from client — add as tool/system message
                 messages.append(
                     ProviderMessage(
                         role="tool",
@@ -104,21 +147,13 @@ def adapt_response_request(
     hosted, passthrough = separate_tools(all_normalized)
     hosted_names = frozenset(t.name for t in hosted)
 
-    # Build provider tool list: passthrough tools + hosted tools as function tools
+    # Filter passthrough tools to keep the model's tool list manageable
+    passthrough = _filter_passthrough_tools(passthrough, max_passthrough_tools)
+
+    # Build provider tool list: hosted tools first (most important), then passthrough
     provider_tools: list[ProviderFunctionTool] = []
 
-    # Add passthrough (function) tools
-    for tool in passthrough:
-        provider_tools.append(
-            ProviderFunctionTool(
-                name=tool.name,
-                description=tool.description,
-                parameters=tool.parameters,
-                strict=tool.metadata.get("strict", True),
-            )
-        )
-
-    # Add hosted tools as function tools so the model can call them
+    # Add hosted tools FIRST — model sees these prominently
     for tool in hosted:
         provider_tools.append(
             ProviderFunctionTool(
@@ -126,6 +161,17 @@ def adapt_response_request(
                 description=tool.description or hosted_tool_description(tool.kind),
                 parameters=HOSTED_TOOL_SCHEMAS.get(tool.kind, tool.parameters),
                 strict=False,
+            )
+        )
+
+    # Add passthrough (function) tools after hosted tools
+    for tool in passthrough:
+        provider_tools.append(
+            ProviderFunctionTool(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
+                strict=tool.metadata.get("strict", True),
             )
         )
 

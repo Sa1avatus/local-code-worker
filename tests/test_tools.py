@@ -288,3 +288,103 @@ def test_web_fetch_blocks_localhost() -> None:
     fetcher = WebFetch()
     result = fetcher.fetch("http://localhost:8765/v1/models")
     assert result.status_code == 0
+
+
+# ── Tool filtering ───────────────────────────────────────────────────────────
+
+def test_adapter_limits_passthrough_tools() -> None:
+    """With many tools, passthrough should be limited to max_passthrough_tools."""
+    tools = [
+        {"type": "function", "name": f"tool_{i}", "parameters": {"type": "object"}}
+        for i in range(20)
+    ]
+    tools.append({"type": "web_search", "external_web_access": False})
+    request = ResponseCreateRequest.model_validate({
+        "model": "test",
+        "input": "hello",
+        "tools": tools,
+    })
+    from local_code_worker.models import JsonMode
+    adapted = adapt_response_request(
+        request, max_output_characters=4000, json_mode=JsonMode.NONE,
+        max_passthrough_tools=5,
+    )
+    tool_names = [t.name for t in adapted.request.tools]
+    assert "web_search" in tool_names
+    passthrough_in_result = [n for n in tool_names if n != "web_search"]
+    assert len(passthrough_in_result) == 5
+
+
+def test_adapter_prioritizes_core_tools() -> None:
+    """Core tools (shell_command, apply_patch) should survive filtering."""
+    tools = [
+        {"type": "function", "name": "_search_documentation", "parameters": {"type": "object"}},
+        {"type": "function", "name": "shell_command", "parameters": {"type": "object"}},
+        {"type": "function", "name": "apply_patch", "parameters": {"type": "object"}},
+        {"type": "function", "name": "_linear_create_issue", "parameters": {"type": "object"}},
+        {"type": "function", "name": "_figma_use", "parameters": {"type": "object"}},
+        {"type": "function", "name": "_github_search", "parameters": {"type": "object"}},
+        {"type": "function", "name": "_drive_search", "parameters": {"type": "object"}},
+        {"type": "function", "name": "_linkedin_search", "parameters": {"type": "object"}},
+        {"type": "function", "name": "_jobicy_search", "parameters": {"type": "object"}},
+        {"type": "function", "name": "_hotline_search", "parameters": {"type": "object"}},
+        {"type": "web_search", "external_web_access": False},
+    ]
+    request = ResponseCreateRequest.model_validate({
+        "model": "test",
+        "input": "hello",
+        "tools": tools,
+    })
+    from local_code_worker.models import JsonMode
+    adapted = adapt_response_request(
+        request, max_output_characters=4000, json_mode=JsonMode.NONE,
+        max_passthrough_tools=5,
+    )
+    tool_names = [t.name for t in adapted.request.tools]
+    assert "shell_command" in tool_names
+    assert "apply_patch" in tool_names
+    assert "web_search" in tool_names
+    passthrough = [n for n in tool_names if n != "web_search"]
+    assert len(passthrough) == 5
+    assert tool_names.index("shell_command") < tool_names.index("_search_documentation")
+
+
+def test_adapter_no_filtering_when_under_limit() -> None:
+    """When tools are under the limit, all should be preserved."""
+    tools = [
+        {"type": "function", "name": "shell_command", "parameters": {"type": "object"}},
+        {"type": "function", "name": "apply_patch", "parameters": {"type": "object"}},
+        {"type": "web_search", "external_web_access": False},
+    ]
+    request = ResponseCreateRequest.model_validate({
+        "model": "test",
+        "input": "hello",
+        "tools": tools,
+    })
+    from local_code_worker.models import JsonMode
+    adapted = adapt_response_request(
+        request, max_output_characters=4000, json_mode=JsonMode.NONE,
+        max_passthrough_tools=8,
+    )
+    tool_names = [t.name for t in adapted.request.tools]
+    assert len(tool_names) == 3
+
+
+def test_adapter_hosted_tools_listed_first() -> None:
+    """Hosted tools should appear before passthrough tools in the list."""
+    tools = [
+        {"type": "function", "name": "shell_command", "parameters": {"type": "object"}},
+        {"type": "web_search", "external_web_access": False},
+        {"type": "function", "name": "apply_patch", "parameters": {"type": "object"}},
+    ]
+    request = ResponseCreateRequest.model_validate({
+        "model": "test",
+        "input": "hello",
+        "tools": tools,
+    })
+    from local_code_worker.models import JsonMode
+    adapted = adapt_response_request(
+        request, max_output_characters=4000, json_mode=JsonMode.NONE,
+    )
+    tool_names = [t.name for t in adapted.request.tools]
+    assert tool_names[0] == "web_search"
