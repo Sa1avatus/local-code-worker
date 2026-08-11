@@ -429,6 +429,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         provider_request = adapted.request
         hosted_tool_names = adapted.hosted_tool_names
         tool_executor = ToolExecutor() if hosted_tool_names else None
+
         route_lease = None
         if request.previous_response_id is not None:
             previous = RESPONSE_STATE.get_stored(request.previous_response_id)
