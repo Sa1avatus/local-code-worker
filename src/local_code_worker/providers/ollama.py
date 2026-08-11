@@ -147,6 +147,18 @@ class OllamaProvider:
             safe_models.append(runtime)
         return safe_models
 
+    def unload_model(self, model: str | None = None) -> None:
+        url = f"{self.base_url}/api/generate"
+        try:
+            with self._client() as client:
+                response = client.post(
+                    url,
+                    json={"model": model or self.settings.llm_model, "keep_alive": 0},
+                )
+                response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise ProviderError("Ollama model unload failed", category="model_unload") from error
+
     def check_connection(self) -> ProviderHealth:
         try:
             models = self.list_models()

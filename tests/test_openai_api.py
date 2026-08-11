@@ -614,6 +614,58 @@ def test_chat_completions_supports_sse_shape(api_server: int) -> None:
     assert content.endswith("data: [DONE]\n\n")
 
 
+def test_generation_requests_are_serialized(api_server: int, monkeypatch) -> None:
+    first_started = threading.Event()
+    release_first = threading.Event()
+    active_lock = threading.Lock()
+    active = 0
+    max_active = 0
+    original_chat = FakeProvider.chat
+
+    def blocking_chat(self, *args, **kwargs):
+        nonlocal active, max_active
+        with active_lock:
+            active += 1
+            max_active = max(max_active, active)
+            is_first = active == 1 and not first_started.is_set()
+        if is_first:
+            first_started.set()
+            assert release_first.wait(timeout=2)
+        try:
+            return original_chat(self, *args, **kwargs)
+        finally:
+            with active_lock:
+                active -= 1
+
+    monkeypatch.setattr(FakeProvider, "chat", blocking_chat)
+    results = []
+
+    def send_request():
+        results.append(
+            request(
+                api_server,
+                "POST",
+                "/v1/chat/completions",
+                {"messages": [{"role": "user", "content": "hello"}]},
+            )
+        )
+
+    first = threading.Thread(target=send_request)
+    second = threading.Thread(target=send_request)
+    first.start()
+    assert first_started.wait(timeout=2)
+    second.start()
+    assert second.is_alive()
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert [result[0] for result in results] == [200, 200]
+    assert max_active == 1
+
+
 def test_chat_completions_rejects_invalid_messages(api_server: int) -> None:
     status, _, content = request(
         api_server,

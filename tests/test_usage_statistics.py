@@ -49,7 +49,35 @@ def test_statistics_aggregate_tokens_speed_and_code_results(tmp_path: Path) -> N
     assert item["prompt_tokens"] == 6
     assert item["completion_tokens"] == 15
     assert item["tokens_per_second"] == 5.0
+    assert item["api_completed"] == 1
+    assert item["api_failed"] == 0
     assert item["code_valid"] == 1
+    assert item["code_invalid"] == 0
+
+
+def test_statistics_separate_api_failures_from_invalid_proposals(tmp_path: Path) -> None:
+    path = tmp_path / "statistics.json"
+    metadata = GenerationMetadata(
+        provider=ProviderName.OLLAMA,
+        model="qwen:test",
+        base_url="http://localhost",
+        started_at="2026-01-01T00:00:00Z",
+        completed_at="2026-01-01T00:00:01Z",
+        duration_seconds=1,
+        prompt_characters=0,
+        output_characters=0,
+        streaming=False,
+        response_format_mode=JsonMode.NONE,
+        usage={},
+    )
+    record_model_call(metadata, kind="response", outcome="failed", path=path)
+
+    item = summarize_model_calls(path)["models"][0]
+
+    assert item["requests"] == 1
+    assert item["api_completed"] == 0
+    assert item["api_failed"] == 1
+    assert item["code_valid"] == 0
     assert item["code_invalid"] == 0
 
 

@@ -35,8 +35,15 @@ def test_runtime_status_uses_ollama_ps_and_polls_every_15_seconds() -> None:
 def test_dashboard_requests_system_metrics_and_renders_cards() -> None:
     assert 'id="metrics"' in INDEX_HTML
     assert "'/api/system'" in INDEX_HTML
+    assert "'/api/inference'" in INDEX_HTML
+    assert "inference.active?'Выполняется':'Ожидание'" in INDEX_HTML
+    assert "`в очереди: ${inference.waiting}" in INDEX_HTML
     assert "renderMetrics(system)" in INDEX_HTML
     assert "linear-gradient(90deg,var(--accent),var(--ok))" in INDEX_HTML
+    assert "CPU системы" in INDEX_HTML
+    assert "RAM системы" in INDEX_HTML
+    assert "CPU контейнера" not in INDEX_HTML
+    assert "RAM контейнера" not in INDEX_HTML
     assert 'id="usageStats"' in INDEX_HTML
     assert "'/api/statistics'" in INDEX_HTML
 
@@ -47,6 +54,12 @@ def test_usage_statistics_render_as_compact_safe_table() -> None:
     assert 'id="usageUpdated"' in INDEX_HTML
     assert "const row=document.createElement('tr')" in INDEX_HTML
     assert "modelName.textContent=item.model" in INDEX_HTML
+    assert "API успешно" in INDEX_HTML
+    assert "API с ошибкой" in INDEX_HTML
+    assert "Proposal валиден" in INDEX_HTML
+    assert "Proposal невалиден" in INDEX_HTML
+    assert "item.api_completed,item.api_failed,item.code_valid,item.code_invalid" in INDEX_HTML
+    assert "cell.colSpan=9" in INDEX_HTML
     assert "usageStats.appendChild(row)" in INDEX_HTML
 
 
@@ -65,6 +78,14 @@ def test_routing_ui_configures_all_tiers_through_v2_settings() -> None:
     assert "loadRouting()" in INDEX_HTML
 
 
+def test_legacy_provider_panel_is_hidden_for_full_router_modes() -> None:
+    assert "legacySettings=provider.closest('section.card')" in INDEX_HTML
+    assert "legacyModes=new Set(['legacy','observe_only','shadow','canary'])" in INDEX_HTML
+    assert "legacySettings.hidden=!legacyModes.has($('routeMode').value)" in INDEX_HTML
+    assert "$('routeMode').addEventListener('change',syncLegacySettings)" in INDEX_HTML
+    assert "$('routeMode').value=data.mode;syncLegacySettings()" in INDEX_HTML
+
+
 def test_routing_ui_discovers_models_without_inserting_html() -> None:
     assert '<select id="${name}Model"></select>' in INDEX_HTML
     assert 'id="routingModels"' not in INDEX_HTML
@@ -78,6 +99,6 @@ def test_routing_ui_discovers_models_without_inserting_html() -> None:
 def test_routing_dashboard_renders_status_metrics() -> None:
     assert 'id="routerMetrics"' in INDEX_HTML
     assert "'/api/v2/router/status'" in INDEX_HTML
-    assert "renderRouting(routing)" in INDEX_HTML
+    assert "renderRouting(routing,inference)" in INDEX_HTML
     assert "success_rate_by_tier" in INDEX_HTML
     assert "cloud_tokens_saved" in INDEX_HTML

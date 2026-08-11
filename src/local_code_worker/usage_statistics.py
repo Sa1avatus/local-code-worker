@@ -93,6 +93,8 @@ def summarize_model_calls(path: Path | None = None) -> dict[str, object]:
                 "duration_seconds": 0.0,
                 "code_valid": 0,
                 "code_invalid": 0,
+                "api_completed": 0,
+                "api_failed": 0,
             },
         )
         item["requests"] += 1
@@ -108,6 +110,11 @@ def summarize_model_calls(path: Path | None = None) -> dict[str, object]:
                 item["code_valid"] += 1
             else:
                 item["code_invalid"] += 1
+        else:
+            if event.get("outcome") == "completed":
+                item["api_completed"] += 1
+            else:
+                item["api_failed"] += 1
     models = []
     for item in grouped.values():
         duration = float(item.pop("duration_seconds"))

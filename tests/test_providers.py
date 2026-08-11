@@ -98,6 +98,17 @@ def test_ollama_running_models_returns_safe_runtime_fields() -> None:
     ]
 
 
+def test_ollama_unload_uses_zero_keep_alive() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/generate"
+        assert json.loads(request.content) == {"model": "qwen:test", "keep_alive": 0}
+        return httpx.Response(200, json={"done": True})
+
+    provider = OllamaProvider(ollama_settings(), httpx.MockTransport(handler))
+
+    provider.unload_model()
+
+
 def test_ollama_stream_collects_chunks_and_done_reason() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)

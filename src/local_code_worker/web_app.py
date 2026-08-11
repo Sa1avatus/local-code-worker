@@ -15,6 +15,7 @@ from pydantic import SecretStr, ValidationError
 
 from .config import WorkerSettings
 from .exceptions import ProviderError, WorkerError
+from .inference_queue import InferenceLease, InferenceQueue
 from .models import JsonMode, ProviderName
 from .providers import create_provider
 from .providers.adapter import CanonicalProviderAdapter
@@ -57,6 +58,8 @@ from .web_config import (
 )
 from .web_models import GatewaySettingsInput, ProviderSettingsInput, validate_model_name
 
+INFERENCE_QUEUE = InferenceQueue()
+
 MAX_REQUEST_BYTES = 64 * 1024
 RESPONSE_STATE = ResponseStateStore()
 LOCAL_HOSTS = {
@@ -73,24 +76,28 @@ INDEX_HTML = r"""<!doctype html>
 :root{color-scheme:dark;--bg:#0b1020;--panel:#131b31;--line:#2b3859;--text:#e8edff;--muted:#93a4ca;--accent:#7c9cff;--ok:#55d6a3;--bad:#ff7d91}*{box-sizing:border-box}
 body{margin:0;background:radial-gradient(circle at 10% 0,#1c2850 0,transparent 38%),var(--bg);font:15px/1.5 system-ui;color:var(--text)}
 main{max-width:920px;margin:42px auto;padding:0 20px}.hero{display:flex;justify-content:space-between;gap:24px;align-items:end;margin-bottom:22px}h1{font-size:32px;margin:0}p{color:var(--muted)}
-.card{background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:0 22px 70px #0005}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.wide{grid-column:1/-1}
+.card{background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:0 22px 70px #0005}[hidden]{display:none!important}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.wide{grid-column:1/-1}
 label{display:block;color:var(--muted);font-size:13px;margin-bottom:6px}input,select,button,textarea{width:100%;border:1px solid var(--line);border-radius:10px;background:#0d1428;color:var(--text);padding:11px 12px;font:inherit}button{cursor:pointer;background:var(--accent);color:#081126;border:0;font-weight:750}button.secondary{background:#243252;color:var(--text)}button:disabled{opacity:.45;cursor:not-allowed}.actions{display:flex;gap:12px;margin-top:18px}.status{min-height:24px;margin:12px 0 0;color:var(--muted)}.ok{color:var(--ok)}.bad{color:var(--bad)}textarea{height:150px;resize:vertical;font-family:ui-monospace,monospace}.keyrow{display:flex;gap:9px}.keyrow input{flex:1}.keyrow button{width:auto}.pill{padding:5px 9px;border:1px solid var(--line);border-radius:99px;color:var(--muted);font-size:12px}@media(max-width:650px){.grid{grid-template-columns:1fr}.wide{grid-column:auto}.hero{display:block}.actions{flex-direction:column}}
 .tiers{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.tier{padding:16px;border:1px solid var(--line);border-radius:14px;background:#0d1428}.tier h3{margin:0 0 2px}.tier p{font-size:12px;margin:0 0 12px}.tier label{margin-top:9px}.check{display:flex;align-items:center;gap:8px}.check input{width:auto}.route-head{display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;margin-bottom:16px}@media(max-width:850px){.tiers{grid-template-columns:1fr}.route-head{grid-template-columns:1fr}}
 .table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px}.usage-table{width:100%;border-collapse:collapse;min-width:760px}.usage-table th,.usage-table td{padding:11px 12px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}.usage-table th{color:var(--muted);font-size:12px;font-weight:650;background:#0d1428}.usage-table th:first-child,.usage-table td:first-child{text-align:left}.usage-table tbody tr:last-child td{border-bottom:0}.usage-table tbody tr:hover{background:#18213a}.model-cell{font-weight:650;color:#b9c8ff}.provider-cell{color:var(--muted);font-size:12px}
 </style></head><body><main><div class="hero"><div><h1>Local Code Worker</h1><p>Провайдеры, ключи и локальные модели — в одном локальном интерфейсе.</p></div><span class="pill" id="health">проверка…</span></div>
 <section class="card" id="routingSettings"><h2 style="margin-top:0">Маршрутизация моделей</h2><p>Запрос начинается с локальных уровней. STRONG используйте как облачную страховку, если локальные модели не справились.</p><div class="route-head"><div><label for="routeMode">Режим</label><select id="routeMode"><option value="router">Router — применять выбор</option><option value="route_llm">RouteLLM policy</option><option value="shadow">Shadow — только сравнивать</option><option value="canary">Canary — стабильная выборка</option><option value="observe_only">Observe only — совместимость</option><option value="legacy">Legacy — одна модель ниже</option></select></div><div class="check"><input id="routeLlm" type="checkbox"><label for="routeLlm">RouteLLM</label></div><div><label for="routeThreshold">Старый порог RouteLLM</label><input id="routeThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="localThreshold">LOCAL threshold</label><input id="localThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="strongThreshold">STRONG threshold</label><input id="strongThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="canaryPercent">Canary, %</label><input id="canaryPercent" type="number" min="0" max="100" step="1"></div><div><label for="maxEscalations">Максимум эскалаций</label><input id="maxEscalations" type="number" min="0" max="10" step="1"></div></div><div class="tiers" id="tierCards"></div><div class="actions"><button id="saveRouting">Сохранить маршрутизацию</button><button class="secondary" id="discoverRouting">Найти локальные модели</button></div><div class="status" id="routingStatus"></div></section>
 <section class="card"><div class="grid"><div><label for="provider">Провайдер</label><select id="provider"><option value="ollama">Ollama (локально)</option><option value="openai-compatible">OpenAI-compatible API</option></select></div><div><label for="baseUrl">Base URL</label><input id="baseUrl"></div><div><label for="model">Модель</label><select id="model"></select></div><div><label for="contextLength">Контекст (токены)</label><input id="contextLength" type="number" min="512" max="131072" step="512"></div><div id="pullBlock"><label for="pullModel">Имя модели для скачивания (необязательно)</label><input id="pullModel" placeholder="qwen2.5-coder:7b-instruct-q5_K_M"></div><div id="keyBlock"><label for="apiKey">API-ключ (пусто = сохранить текущий)</label><div class="keyrow"><input id="apiKey" type="password" autocomplete="new-password" placeholder="••••••••"><button class="secondary" id="clearKey" type="button">Удалить</button></div></div></div>
-<div class="actions"><button id="save">Сохранить и проверить</button><button class="secondary" id="refresh">Обновить модели</button><button class="secondary" id="pull">Скачать модель</button></div><div class="status" id="status"></div><textarea id="progress" readonly placeholder="Прогресс загрузки Ollama…"></textarea></section><section class="card" style="margin-top:18px"><div class="hero" style="margin-bottom:12px"><div><h2 style="margin:0">Мониторинг системы и моделей</h2><p style="margin:4px 0 0">Обновляется каждые 15 секунд.</p></div><span class="pill" id="runtimeUpdated">проверка…</span></div><div class="grid" id="metrics"></div><div class="status" id="runtime">Проверка состояния Ollama…</div></section><section class="card" style="margin-top:18px"><h2 style="margin:0">Маршрутизация</h2><p>Распределение, эскалации, latency и экономия cloud tokens.</p><div class="grid" id="routerMetrics"></div></section><section class="card" style="margin-top:18px"><div class="hero" style="margin-bottom:12px"><div><h2 style="margin:0">Статистика обращений</h2><p style="margin:4px 0 0">Накопительные данные; обновляются после завершения запроса.</p></div><span class="pill" id="usageUpdated">проверка…</span></div><div class="table-wrap"><table class="usage-table"><thead><tr><th>Модель</th><th>Запросы</th><th>Входные</th><th>Выходные</th><th>Ток/с</th><th>Код успешно</th><th>С ошибкой</th></tr></thead><tbody id="usageStats"></tbody></table></div></section></main>
+<div class="actions"><button id="save">Сохранить и проверить</button><button class="secondary" id="refresh">Обновить модели</button><button class="secondary" id="pull">Скачать модель</button></div><div class="status" id="status"></div><textarea id="progress" readonly placeholder="Прогресс загрузки Ollama…"></textarea></section><section class="card" style="margin-top:18px"><div class="hero" style="margin-bottom:12px"><div><h2 style="margin:0">Мониторинг системы и моделей</h2><p style="margin:4px 0 0">Обновляется каждые 15 секунд.</p></div><span class="pill" id="runtimeUpdated">проверка…</span></div><div class="grid" id="metrics"></div><div class="status" id="runtime">Проверка состояния Ollama…</div></section><section class="card" style="margin-top:18px"><h2 style="margin:0">Маршрутизация</h2><p>Распределение, эскалации, latency и экономия cloud tokens.</p><div class="grid" id="routerMetrics"></div></section><section class="card" style="margin-top:18px"><div class="hero" style="margin-bottom:12px"><div><h2 style="margin:0">Статистика обращений</h2><p style="margin:4px 0 0">Накопительные данные; API-вызовы и legacy proposal учитываются раздельно.</p></div><span class="pill" id="usageUpdated">проверка…</span></div><div class="table-wrap"><table class="usage-table"><thead><tr><th>Модель</th><th>Запросы</th><th>Входные</th><th>Выходные</th><th>Ток/с</th><th>API успешно</th><th>API с ошибкой</th><th>Proposal валиден</th><th>Proposal невалиден</th></tr></thead><tbody id="usageStats"></tbody></table></div></section></main>
 <script>
 const $=id=>document.getElementById(id), provider=$('provider'), baseUrl=$('baseUrl'), model=$('model'), contextLength=$('contextLength'), pullModel=$('pullModel'), apiKey=$('apiKey'), status=$('status'), progress=$('progress'), runtime=$('runtime'), runtimeUpdated=$('runtimeUpdated'), metrics=$('metrics'), routerMetrics=$('routerMetrics'), usageStats=$('usageStats');let clearKey=false;
 const tierNames=['local','mid','strong'],tierLabels={local:'LOCAL',mid:'MID',strong:'STRONG'},tierHelp={local:'Первая локальная модель: быстрые и простые задачи.',mid:'Локальная модель для рассуждений и сложного исполнения.',strong:'Последний уровень; здесь можно указать облачную модель.'},clearedTierKeys=new Set();
 function routingMessage(text,ok=true){const node=$('routingStatus');node.textContent=text;node.className='status '+(ok?'ok':'bad')}
 function tierCard(name){const card=document.createElement('div');card.className='tier';card.dataset.tier=name;card.innerHTML=`<h3>${tierLabels[name]}</h3><p>${tierHelp[name]}</p><div class="check"><input id="${name}Enabled" type="checkbox"><label for="${name}Enabled">Уровень включён</label></div><label for="${name}Provider">Провайдер</label><select id="${name}Provider"><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI-compatible</option></select><label for="${name}BaseUrl">Base URL</label><input id="${name}BaseUrl"><label for="${name}Model">Модель</label><select id="${name}Model"></select><label for="${name}Context">Контекст</label><input id="${name}Context" type="number" min="512" max="131072" step="512"><label for="${name}Key">API-ключ (пусто = оставить)</label><div class="keyrow"><input id="${name}Key" type="password" autocomplete="new-password"><button class="secondary" type="button" data-clear-key="${name}">×</button></div><small id="${name}KeyState"></small>`;return card}
 for(const name of tierNames)$('tierCards').appendChild(tierCard(name));
+const legacySettings=provider.closest('section.card'),legacyModes=new Set(['legacy','observe_only','shadow','canary']);
+function syncLegacySettings(){legacySettings.hidden=!legacyModes.has($('routeMode').value)}
+syncLegacySettings();
+$('routeMode').addEventListener('change',syncLegacySettings);
 function setTierModel(name,value){const select=$(name+'Model');if(value&&![...select.options].some(option=>option.value===value)){const option=document.createElement('option');option.value=value;option.textContent=value;select.appendChild(option)}select.value=value||''}
 function fillTier(name,data){$(name+'Enabled').checked=data.enabled;$(name+'Provider').value=data.provider;$(name+'BaseUrl').value=data.base_url||'';setTierModel(name,data.model);$(name+'Context').value=data.context_length||32768;$(name+'Key').value='';$(name+'KeyState').textContent=data.api_key_configured?'Ключ сохранён':'Ключ не задан'}
 function tierPayload(name){const key=$(name+'Key').value,clear=clearedTierKeys.has(name),action=clear?'clear':key?'replace':'keep';return {enabled:$(name+'Enabled').checked,provider:$(name+'Provider').value,base_url:$(name+'BaseUrl').value,model:$(name+'Model').value,context_length:Number($(name+'Context').value),api_key_action:action,api_key:action==='replace'?key:null}}
-async function loadRouting(){try{const data=await jsonFetch('/api/v2/settings');$('routeMode').value=data.mode;$('routeLlm').checked=data.routellm_enabled;$('routeThreshold').value=data.routellm_threshold;$('localThreshold').value=data.local_threshold;$('strongThreshold').value=data.strong_threshold;$('canaryPercent').value=data.canary_percent;$('maxEscalations').value=data.max_escalations_per_lease;for(const name of tierNames)fillTier(name,data.tiers[name]);await discoverRouting(false);routingMessage('Маршрутизация загружена')}catch(e){routingMessage(e.message,false)}}
+async function loadRouting(){try{const data=await jsonFetch('/api/v2/settings');$('routeMode').value=data.mode;syncLegacySettings();$('routeLlm').checked=data.routellm_enabled;$('routeThreshold').value=data.routellm_threshold;$('localThreshold').value=data.local_threshold;$('strongThreshold').value=data.strong_threshold;$('canaryPercent').value=data.canary_percent;$('maxEscalations').value=data.max_escalations_per_lease;for(const name of tierNames)fillTier(name,data.tiers[name]);await discoverRouting(false);routingMessage('Маршрутизация загружена')}catch(e){routingMessage(e.message,false)}}
 async function saveRouting(){try{const tiers=Object.fromEntries(tierNames.map(name=>[name,tierPayload(name)])),data=await jsonFetch('/api/v2/settings',{method:'PUT',body:JSON.stringify({mode:$('routeMode').value,tiers,routellm_enabled:$('routeLlm').checked,routellm_threshold:Number($('routeThreshold').value),local_threshold:Number($('localThreshold').value),strong_threshold:Number($('strongThreshold').value),canary_percent:Number($('canaryPercent').value),max_escalations_per_lease:Number($('maxEscalations').value)})});clearedTierKeys.clear();for(const name of tierNames)fillTier(name,data.tiers[name]);routingMessage('Маршрутизация сохранена',true)}catch(e){routingMessage(e.message,false)}}
 async function discoverRouting(announce=true){try{const data=await jsonFetch('/api/models'),models=[...new Set(data.models.filter(name=>typeof name==='string'&&name.trim()).map(name=>name.trim()))];for(const tier of tierNames){const select=$(tier+'Model'),current=select.value;select.replaceChildren();for(const name of models){const option=document.createElement('option');option.value=name;option.textContent=name;select.appendChild(option)}setTierModel(tier,current)}if(announce)routingMessage(`Найдено локальных моделей: ${models.length}`)}catch(e){if(announce)routingMessage(e.message,false)}}
 function message(text,ok=true){status.textContent=text;status.className='status '+(ok?'ok':'bad')}
@@ -98,11 +105,11 @@ function sync(){const local=provider.value==='ollama';$('keyBlock').style.displa
 async function jsonFetch(url,options={}){const response=await fetch(url,{headers:{'Content-Type':'application/json'},...options});const data=await response.json();if(!response.ok)throw new Error(data.error||response.statusText);return data}
 function bytes(value){return typeof value==='number'?(value/1024/1024/1024).toFixed(1)+' ГБ':'—'}
 function meter(title,value,caption,percent=0){const card=document.createElement('div');card.style.cssText='padding:14px;border:1px solid var(--line);border-radius:12px;background:#0d1428';const heading=document.createElement('div');heading.style.color='var(--muted)';heading.textContent=title;const number=document.createElement('div');number.style.cssText='font-size:25px;font-weight:750;margin-top:3px;color:var(--accent)';number.textContent=value;const bar=document.createElement('div');bar.style.cssText='height:7px;background:#253252;border-radius:99px;margin:10px 0 7px;overflow:hidden';const fill=document.createElement('div');fill.style.cssText=`height:100%;width:${Math.max(0,Math.min(100,percent))}%;background:linear-gradient(90deg,var(--accent),var(--ok));border-radius:inherit;transition:width .35s ease`;bar.appendChild(fill);const text=document.createElement('div');text.style.color='var(--muted)';text.textContent=caption;card.append(heading,number,bar,text);return card}
-function renderMetrics(data){metrics.replaceChildren();const gpu=data.gpus&&data.gpus[0];if(gpu){metrics.append(meter(gpu.name,`${gpu.usage_percent}% GPU`,`${gpu.temperature_celsius} °C · ${bytes(gpu.memory_used_bytes)} / ${bytes(gpu.memory_total_bytes)} VRAM`,gpu.usage_percent),meter('Питание и частота',`${gpu.power_watts} Вт`,`лимит ${gpu.power_limit_watts} Вт · ${gpu.clock_mhz} МГц`,gpu.power_limit_watts?gpu.power_watts/gpu.power_limit_watts*100:0))}else{metrics.append(meter('GPU','Недоступна','Docker не передал NVIDIA NVML в контейнер'))}metrics.append(meter('CPU контейнера',`${data.cpu.usage_percent}% CPU`,'текущая загрузка',data.cpu.usage_percent),meter('RAM контейнера',`${data.memory.usage_percent}% RAM`,`${bytes(data.memory.used_bytes)} / ${bytes(data.memory.total_bytes)}`,data.memory.usage_percent))}
-function renderUsage(data){usageStats.replaceChildren();if(!data.models.length){const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=7;cell.textContent='Пока нет завершённых обращений.';row.appendChild(cell);usageStats.appendChild(row);return}for(const item of data.models){const row=document.createElement('tr'),modelCell=document.createElement('td'),modelName=document.createElement('div'),providerName=document.createElement('div');modelName.className='model-cell';modelName.textContent=item.model;providerName.className='provider-cell';providerName.textContent=item.provider;modelCell.append(modelName,providerName);row.appendChild(modelCell);for(const value of [item.requests,item.prompt_tokens,item.completion_tokens,item.tokens_per_second,item.code_valid,item.code_invalid]){const cell=document.createElement('td');cell.textContent=Number(value||0).toLocaleString();row.appendChild(cell)}usageStats.appendChild(row)}$('usageUpdated').textContent='обновлено '+new Date().toLocaleTimeString()}
-function renderRouting(data){routerMetrics.replaceChildren();const m=data.metrics,routes=Object.entries(m.requests_by_route||{}).map(([k,v])=>`${k.toUpperCase()}: ${v}`).join(' · ')||'нет решений',rates=Object.entries(m.success_rate_by_tier||{}).map(([k,v])=>`${k.toUpperCase()}: ${Math.round(v*100)}%`).join(' · ')||'нет данных',latency=Object.entries(m.average_latency_ms_by_tier||{}).map(([k,v])=>`${k.toUpperCase()}: ${Math.round(v)} ms`).join(' · ')||'нет данных';routerMetrics.append(meter(`Режим: ${data.mode}`,`${m.router_decisions_total} решений`,routes),meter('Эскалации',String(m.escalations_total),Object.entries(m.escalations_by_reason||{}).map(([k,v])=>`${k}: ${v}`).join(' · ')||'нет'),meter('Success rate',rates,latency),meter('Cloud tokens',String(m.cloud_tokens||0),`оценочно сохранено: ${m.cloud_tokens_saved||0}`))}
+function renderMetrics(data){metrics.replaceChildren();const gpu=data.gpus&&data.gpus[0];if(gpu){metrics.append(meter(gpu.name,`${gpu.usage_percent}% GPU`,`${gpu.temperature_celsius} °C · ${bytes(gpu.memory_used_bytes)} / ${bytes(gpu.memory_total_bytes)} VRAM`,gpu.usage_percent),meter('Питание и частота',`${gpu.power_watts} Вт`,`лимит ${gpu.power_limit_watts} Вт · ${gpu.clock_mhz} МГц`,gpu.power_limit_watts?gpu.power_watts/gpu.power_limit_watts*100:0))}else{metrics.append(meter('GPU','Недоступна','Docker не передал NVIDIA NVML в контейнер'))}metrics.append(meter('CPU системы',`${data.cpu.usage_percent}% CPU`,'агрегированная загрузка',data.cpu.usage_percent),meter('RAM системы',`${data.memory.usage_percent}% RAM`,`${bytes(data.memory.used_bytes)} / ${bytes(data.memory.total_bytes)}`,data.memory.usage_percent))}
+function renderUsage(data){usageStats.replaceChildren();if(!data.models.length){const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=9;cell.textContent='Пока нет завершённых обращений.';row.appendChild(cell);usageStats.appendChild(row);return}for(const item of data.models){const row=document.createElement('tr'),modelCell=document.createElement('td'),modelName=document.createElement('div'),providerName=document.createElement('div');modelName.className='model-cell';modelName.textContent=item.model;providerName.className='provider-cell';providerName.textContent=item.provider;modelCell.append(modelName,providerName);row.appendChild(modelCell);for(const value of [item.requests,item.prompt_tokens,item.completion_tokens,item.tokens_per_second,item.api_completed,item.api_failed,item.code_valid,item.code_invalid]){const cell=document.createElement('td');cell.textContent=Number(value||0).toLocaleString();row.appendChild(cell)}usageStats.appendChild(row)}$('usageUpdated').textContent='обновлено '+new Date().toLocaleTimeString()}
+function renderRouting(data,inference){routerMetrics.replaceChildren();const m=data.metrics,routes=Object.entries(m.requests_by_route||{}).map(([k,v])=>`${k.toUpperCase()}: ${v}`).join(' · ')||'нет решений',rates=Object.entries(m.success_rate_by_tier||{}).map(([k,v])=>`${k.toUpperCase()}: ${Math.round(v*100)}%`).join(' · ')||'нет данных',latency=Object.entries(m.average_latency_ms_by_tier||{}).map(([k,v])=>`${k.toUpperCase()}: ${Math.round(v)} ms`).join(' · ')||'нет данных';routerMetrics.append(meter('Inference',inference.active?'Выполняется':'Ожидание',`в очереди: ${inference.waiting} · ${inference.model||'модель не активна'}`,inference.active?100:0),meter(`Режим: ${data.mode}`,`${m.router_decisions_total} решений`,routes),meter('Эскалации',String(m.escalations_total),Object.entries(m.escalations_by_reason||{}).map(([k,v])=>`${k}: ${v}`).join(' · ')||'нет'),meter('Success rate',rates,latency),meter('Cloud tokens',String(m.cloud_tokens||0),`оценочно сохранено: ${m.cloud_tokens_saved||0}`))}
 function runtimeCard(item){const total=item.size||0,vram=item.size_vram||0,gpu=total?Math.round(vram/total*100):0,card=document.createElement('div');card.style.cssText='padding:12px;border:1px solid var(--line);border-radius:10px;margin-top:8px';const title=document.createElement('strong');title.textContent=item.name;const details=document.createElement('div');details.style.color='var(--muted)';details.textContent=`GPU: ${gpu}% · CPU: ${100-gpu}% · VRAM модели: ${bytes(vram)} из ${bytes(total)} · Контекст: ${item.context_length||'—'}`;card.append(title,details);return card}
-async function runtimeStatus(){try{const [data,system,usage,routing]=await Promise.all([jsonFetch('/api/runtime'),jsonFetch('/api/system'),jsonFetch('/api/statistics'),jsonFetch('/api/v2/router/status')]);renderMetrics(system);renderUsage(usage);renderRouting(routing);runtime.replaceChildren();if(data.provider!=='ollama'){runtime.textContent='Статус размещения доступен только для Ollama.'}else if(!data.models.length){runtime.textContent='Сейчас ни одна модель не загружена в Ollama.'}else{for(const item of data.models)runtime.appendChild(runtimeCard(item));}runtimeUpdated.textContent='обновлено '+new Date().toLocaleTimeString()}catch(e){runtime.textContent='Не удалось получить статус: '+e.message;runtimeUpdated.textContent='ошибка'}}
+async function runtimeStatus(){try{const [data,system,usage,routing,inference]=await Promise.all([jsonFetch('/api/runtime'),jsonFetch('/api/system'),jsonFetch('/api/statistics'),jsonFetch('/api/v2/router/status'),jsonFetch('/api/inference')]);renderMetrics(system);renderUsage(usage);renderRouting(routing,inference);runtime.replaceChildren();if(data.provider!=='ollama'){runtime.textContent='Статус размещения доступен только для Ollama.'}else if(!data.models.length){runtime.textContent='Сейчас ни одна модель не загружена в Ollama.'}else{for(const item of data.models)runtime.appendChild(runtimeCard(item));}runtimeUpdated.textContent='обновлено '+new Date().toLocaleTimeString()}catch(e){runtime.textContent='Не удалось получить статус: '+e.message;runtimeUpdated.textContent='ошибка'}}
 async function load(){try{const data=await jsonFetch('/api/settings');provider.value=data.provider;baseUrl.value=data.base_url;contextLength.value=data.context_length;sync();await models(data.model||'');await runtimeStatus();$('health').textContent=data.api_key_configured?'ключ сохранён':'локальная конфигурация'}catch(e){message(e.message,false)}}
 async function save(){try{const action=clearKey?'clear':apiKey.value?'replace':'keep';const data=await jsonFetch('/api/settings',{method:'PUT',body:JSON.stringify({provider:provider.value,base_url:baseUrl.value,model:model.value,context_length:Number(contextLength.value),api_key_action:action,api_key:action==='replace'?apiKey.value:null})});apiKey.value='';clearKey=false;message('Настройки сохранены. Выгрузите модель через ollama stop, чтобы применить новый контекст.',true);$('health').textContent=data.api_key_configured?'ключ сохранён':'готово'}catch(e){message(e.message,false)}}
 async function models(preferredModel=model.value){preferredModel=typeof preferredModel==='string'?preferredModel:'';try{const data=await jsonFetch('/api/models');const names=[...new Set((Array.isArray(data.models)?data.models:[]).filter(name=>typeof name==='string'&&name.trim()).map(name=>name.trim()))];if(preferredModel&&!names.includes(preferredModel))names.unshift(preferredModel);model.replaceChildren();for(const name of names){const option=document.createElement('option');option.value=name;option.textContent=name;model.appendChild(option)}if(preferredModel)model.value=preferredModel;message(`Найдено моделей: ${data.models.length}`)}catch(e){message(e.message,false)}}
@@ -224,9 +231,13 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             raise ValueError("stream must be a boolean")
         return settings.model_copy(update=updates), messages, stream, virtual_model.id
 
-    def _chat_completion(self) -> None:
+    def _chat_completion(self, lease: InferenceLease) -> None:
         settings, messages, stream, public_model = self._chat_request()
         provider = create_provider(settings)
+        lease.model = settings.llm_model
+        lease.route = public_model
+        if isinstance(provider, OllamaProvider):
+            lease.idle_cleanup = provider.unload_model
         content = provider.chat(
             messages,
             None,
@@ -295,7 +306,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             },
         )
 
-    def _response(self) -> None:
+    def _response(self, lease: InferenceLease) -> None:
         request = ResponseCreateRequest.model_validate(self._read_json())
         virtual_model = VIRTUAL_MODEL_REGISTRY.resolve(request.model)
         if request.tools and request.stream:
@@ -344,6 +355,10 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             )
         settings = self._settings_with_tier_secret(settings)
         provider = create_provider(settings)
+        lease.model = settings.llm_model
+        lease.route = routing_plan.actual.tier.value
+        if isinstance(provider, OllamaProvider):
+            lease.idle_cleanup = provider.unload_model
         message_id = f"msg_{uuid.uuid4().hex}"
         created_at = int(time.time())
         if not request.stream:
@@ -389,6 +404,11 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                         )
                     settings = self._settings_with_tier_secret(settings)
                     provider = create_provider(settings)
+                    lease.model = settings.llm_model
+                    lease.route = routing_plan.actual.tier.value
+                    lease.idle_cleanup = (
+                        provider.unload_model if isinstance(provider, OllamaProvider) else None
+                    )
             record_routing_plan(response_id, routing_plan)
             log_routing_decision(
                 request_id=request_id,
@@ -461,6 +481,11 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                     )
                 settings = self._settings_with_tier_secret(settings)
                 provider = create_provider(settings)
+                lease.model = settings.llm_model
+                lease.route = routing_plan.actual.tier.value
+                lease.idle_cleanup = (
+                    provider.unload_model if isinstance(provider, OllamaProvider) else None
+                )
             except StopIteration as error:
                 raise ProviderError(
                     "provider stream ended before the first event",
@@ -586,6 +611,9 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             if request_url.path == "/api/system":
                 self._send_json(HTTPStatus.OK, read_system_metrics())
                 return
+            if request_url.path == "/api/inference":
+                self._send_json(HTTPStatus.OK, INFERENCE_QUEUE.status())
+                return
             if request_url.path == "/api/statistics":
                 self._send_json(HTTPStatus.OK, summarize_model_calls())
                 return
@@ -673,7 +701,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/chat/completions":
             try:
-                self._chat_completion()
+                with INFERENCE_QUEUE.acquire() as lease:
+                    self._chat_completion(lease)
             except (ProviderError, WorkerError, ValidationError, ValueError, OSError) as error:
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
@@ -682,7 +711,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/responses":
             try:
-                self._response()
+                with INFERENCE_QUEUE.acquire() as lease:
+                    self._response(lease)
             except (ProviderError, WorkerError, ValidationError, ValueError, OSError) as error:
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
@@ -693,23 +723,24 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
         try:
-            model = validate_model_name(str(self._read_json().get("model", "")))
-            settings = self._settings()
-            if settings.llm_provider is not ProviderName.OLLAMA:
-                raise ValueError("Select the Ollama provider before installing a local model")
-            provider = create_provider(settings)
-            if not isinstance(provider, OllamaProvider):
-                raise ValueError("Configured provider cannot install Ollama models")
-            chunks = iter(provider.pull_model(model))
-            first_chunk = next(chunks)
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            response_started = True
-            for chunk in chain((first_chunk,), chunks):
-                self.wfile.write(json.dumps(chunk, ensure_ascii=False).encode("utf-8") + b"\n")
-                self.wfile.flush()
+            with INFERENCE_QUEUE.acquire():
+                model = validate_model_name(str(self._read_json().get("model", "")))
+                settings = self._settings()
+                if settings.llm_provider is not ProviderName.OLLAMA:
+                    raise ValueError("Select the Ollama provider before installing a local model")
+                provider = create_provider(settings)
+                if not isinstance(provider, OllamaProvider):
+                    raise ValueError("Configured provider cannot install Ollama models")
+                chunks = iter(provider.pull_model(model))
+                first_chunk = next(chunks)
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                response_started = True
+                for chunk in chain((first_chunk,), chunks):
+                    self.wfile.write(json.dumps(chunk, ensure_ascii=False).encode("utf-8") + b"\n")
+                    self.wfile.flush()
         except StopIteration:
             if not response_started:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Ollama returned no progress"})
