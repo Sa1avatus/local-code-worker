@@ -274,7 +274,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 "effective_context_window_percent": 95,
                 "experimental_supported_tools": [],
                 "input_modalities": ["text"],
-                "supports_search_tool": False,
+                "supports_search_tool": True,
                 "use_responses_lite": True,
                 "tool_mode": "default",
                 "multi_agent_version": "v1",

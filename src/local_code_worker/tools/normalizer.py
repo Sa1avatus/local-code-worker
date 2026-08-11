@@ -1,4 +1,4 @@
-﻿"""Normalize Responses API tools into internal NormalizedTool representation."""
+"""Normalize Responses API tools into internal NormalizedTool representation."""
 
 from __future__ import annotations
 
@@ -62,10 +62,25 @@ def normalize_tool_dict(raw: dict[str, Any]) -> list[NormalizedTool]:
         ]
 
     if kind == ToolKind.FUNCTION:
+        # Check if this function tool is actually a hosted tool by name
+        # (e.g. Codex CLI may send web_search as {"type":"function","name":"web_search"})
+        func_name = raw.get("name", "unknown")
+        _HOSTED_NAMES = {"web_search", "web_fetch", "github_search", "docs_search", "local_rag_search"}
+        if func_name in _HOSTED_NAMES:
+            hosted_kind = _kind_from_type(func_name)
+            return [
+                NormalizedTool(
+                    kind=hosted_kind,
+                    name=func_name,
+                    description=raw.get("description") or hosted_tool_description(hosted_kind),
+                    parameters=HOSTED_TOOL_SCHEMAS.get(hosted_kind, raw.get("parameters", {})),
+                    original_payload=raw,
+                )
+            ]
         return [
             NormalizedTool(
                 kind=kind,
-                name=raw.get("name", "unknown"),
+                name=func_name,
                 description=raw.get("description"),
                 parameters=raw.get("parameters", {}),
                 metadata={"strict": raw.get("strict", True)},
