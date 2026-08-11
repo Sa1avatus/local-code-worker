@@ -30,6 +30,7 @@ class WorkerSettings(BaseSettings):
     llm_stream: bool = True
     llm_json_mode: JsonMode = JsonMode.AUTO
     llm_keep_alive: str = "30m"
+    llm_unload_policy: str = "immediate"  # "immediate", "never", or minutes like "5", "10", "30"
     ollama_base_url: HttpUrl | None = None
     ollama_model: str | None = None
     ollama_timeout_seconds: float | None = Field(default=None, gt=0)
