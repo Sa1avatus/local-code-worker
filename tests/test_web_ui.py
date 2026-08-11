@@ -41,6 +41,15 @@ def test_dashboard_requests_system_metrics_and_renders_cards() -> None:
     assert "'/api/statistics'" in INDEX_HTML
 
 
+def test_usage_statistics_render_as_compact_safe_table() -> None:
+    assert 'class="usage-table"' in INDEX_HTML
+    assert '<tbody id="usageStats"></tbody>' in INDEX_HTML
+    assert 'id="usageUpdated"' in INDEX_HTML
+    assert "const row=document.createElement('tr')" in INDEX_HTML
+    assert "modelName.textContent=item.model" in INDEX_HTML
+    assert "usageStats.appendChild(row)" in INDEX_HTML
+
+
 def test_context_length_is_loaded_saved_and_requires_model_reload() -> None:
     assert "contextLength.value=data.context_length" in INDEX_HTML
     assert "context_length:Number(contextLength.value)" in INDEX_HTML
