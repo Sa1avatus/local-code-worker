@@ -582,11 +582,24 @@ def _parse_ollama_text_function_call(
     tools: list[ProviderFunctionTool],
 ) -> FunctionCallMetadata | None:
     stripped = content.strip()
+    allowed_names = {tool.name for tool in tools}
+    # Try <tools>...</tools> XML format first
     opening = "<tools>"
     closing = "</tools>"
-    if not stripped.startswith(opening) or not stripped.endswith(closing):
-        return None
-    encoded = stripped[len(opening) : -len(closing)].strip()
+    if stripped.startswith(opening) and stripped.endswith(closing):
+        encoded = stripped[len(opening) : -len(closing)].strip()
+        result = _try_parse_tool_json(encoded, allowed_names)
+        if result is not None:
+            return result
+    # Try bare JSON function call: {"name": "...", "arguments": {...}}
+    if stripped.startswith("{") and stripped.endswith("}"):
+        result = _try_parse_tool_json(stripped, allowed_names)
+        if result is not None:
+            return result
+    return None
+
+
+def _try_parse_tool_json(encoded: str, allowed_names: set[str]) -> FunctionCallMetadata | None:
     try:
         payload = json.loads(encoded)
     except ValueError:
@@ -595,7 +608,6 @@ def _parse_ollama_text_function_call(
         return None
     name = payload.get("name")
     arguments = payload.get("arguments")
-    allowed_names = {tool.name for tool in tools}
     if not isinstance(name, str) or name not in allowed_names or not isinstance(arguments, dict):
         return None
     return FunctionCallMetadata(
