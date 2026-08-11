@@ -5,10 +5,22 @@ from pydantic import Field
 from ..models import StrictModel
 
 
+class ResponseAdditionalTools(StrictModel):
+    type: Literal["additional_tools"] = "additional_tools"
+    tools: list[dict[str, object]] = Field(default_factory=list)
+    role: str | None = None
+
+
 class ResponseInputMessage(StrictModel):
     type: Literal["message"] = "message"
+    id: str | None = None
     role: Literal["user", "assistant", "system", "developer"]
-    content: str
+    content: str | list["ResponseInputText"]
+
+
+class ResponseInputText(StrictModel):
+    type: Literal["input_text"] = "input_text"
+    text: str
 
 
 class ResponseFunctionTool(StrictModel):
@@ -19,6 +31,18 @@ class ResponseFunctionTool(StrictModel):
     strict: bool = True
 
 
+class ResponseNamespaceTool(StrictModel):
+    type: Literal["namespace"] = "namespace"
+    name: str = Field(min_length=1)
+    description: str | None = None
+    tools: list[ResponseFunctionTool]
+
+
+class ResponseWebSearchTool(StrictModel):
+    type: Literal["web_search"] = "web_search"
+    external_web_access: bool = False
+
+
 class ResponseFunctionToolChoice(StrictModel):
     type: Literal["function"] = "function"
     name: str = Field(min_length=1)
@@ -27,13 +51,25 @@ class ResponseFunctionToolChoice(StrictModel):
 class ResponseReasoning(StrictModel):
     effort: Literal["none", "low", "medium", "high", "xhigh", "max"] | None = None
     summary: Literal["auto", "concise", "detailed"] | None = None
+    context: str | None = None
+
+
+class ResponseTextConfig(StrictModel):
+    format: dict[str, object] | None = None
+    verbosity: str | None = None
+
+
+class ResponseTruncationConfig(StrictModel):
+    type: Literal["auto", "disabled"] = "auto"
 
 
 class ResponseCreateRequest(StrictModel):
     model: str = Field(min_length=1)
-    input: str | list[ResponseInputMessage]
+    input: str | list[ResponseInputMessage | ResponseAdditionalTools]
     instructions: str | None = None
-    tools: list[ResponseFunctionTool] = Field(default_factory=list)
+    tools: list[ResponseFunctionTool | ResponseNamespaceTool | ResponseWebSearchTool] = Field(
+        default_factory=list
+    )
     tool_choice: Literal["none", "auto", "required"] | ResponseFunctionToolChoice = "auto"
     reasoning: ResponseReasoning | None = None
     max_output_tokens: int | None = Field(default=None, gt=0)
@@ -41,6 +77,13 @@ class ResponseCreateRequest(StrictModel):
     previous_response_id: str | None = None
     stream: bool = False
     store: bool = False
+    include: list[str] = Field(default_factory=list)
+    prompt_cache_key: str | None = None
+    client_metadata: dict[str, object] = Field(default_factory=dict)
+    text: ResponseTextConfig | None = None
+    temperature: float | None = None
+    truncation: ResponseTruncationConfig | None = None
+    metadata: dict[str, object] | None = None
 
 
 class ResponseErrorDetail(StrictModel):

@@ -208,19 +208,84 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         return settings.model_copy(update={"llm_api_key": SecretStr(str(secret))})
 
     def _openai_models(self) -> None:
+        standard_models = [
+            {
+                "id": model.id,
+                "object": "model",
+                "created": 0,
+                "owned_by": "local-code-worker",
+            }
+            for model in VIRTUAL_MODEL_REGISTRY.list_models()
+        ]
+        _LCW_BASE_INSTRUCTIONS = (
+            "You are a helpful coding assistant powered by a local model. "
+            "You share a workspace with the user. Your job is to collaborate "
+            "with them until their goal is genuinely handled.\n\n"
+            "# Communication\n"
+            "- Use the `commentary` channel for progress updates while you work.\n"
+            "- End your turn with a final message in the `final` channel.\n"
+            "- Be concise and direct. Lead with the outcome.\n\n"
+            "# Tools\n"
+            "- Use shell_command for running commands.\n"
+            "- Use apply_patch for file edits.\n"
+            "- Prefer the narrowest command that accomplishes the task."
+        )
+        _LCW_MODEL_MESSAGES = {
+            "instructions_template": _LCW_BASE_INSTRUCTIONS,
+            "instructions_variables": None,
+            "approvals": None,
+            "auto_review": None,
+            "permissions": None,
+        }
+        codex_models = [
+            {
+                "slug": model.id,
+                "display_name": model.id.rsplit("/", 1)[-1].upper(),
+                "description": model.description,
+                "default_reasoning_level": "low",
+                "supported_reasoning_levels": [
+                    {"effort": "low", "description": "Local inference"},
+                    {"effort": "medium", "description": "Local inference"},
+                    {"effort": "high", "description": "Local inference"},
+                ],
+                "shell_type": "shell_command",
+                "visibility": "list",
+                "supported_in_api": True,
+                "priority": 10,
+                "additional_speed_tiers": [],
+                "service_tiers": [],
+                "availability_nux": None,
+                "upgrade": None,
+                "base_instructions": _LCW_BASE_INSTRUCTIONS,
+                "model_messages": _LCW_MODEL_MESSAGES,
+                "include_skills_usage_instructions": False,
+                "default_reasoning_summary": "none",
+                "support_verbosity": True,
+                "default_verbosity": "low",
+                "apply_patch_tool_type": "freeform",
+                "web_search_tool_type": "text_and_image",
+                "truncation_policy": {"mode": "tokens", "limit": 10_000},
+                "supports_parallel_tool_calls": True,
+                "supports_image_detail_original": False,
+                "context_window": 16_000,
+                "max_context_window": 16_000,
+                "comp_hash": "0",
+                "effective_context_window_percent": 95,
+                "experimental_supported_tools": [],
+                "input_modalities": ["text"],
+                "supports_search_tool": False,
+                "use_responses_lite": True,
+                "tool_mode": "default",
+                "multi_agent_version": "v1",
+            }
+            for model in VIRTUAL_MODEL_REGISTRY.list_models()
+        ]
         self._send_json(
             HTTPStatus.OK,
             {
                 "object": "list",
-                "data": [
-                    {
-                        "id": model.id,
-                        "object": "model",
-                        "created": 0,
-                        "owned_by": "local-code-worker",
-                    }
-                    for model in VIRTUAL_MODEL_REGISTRY.list_models()
-                ],
+                "data": standard_models,
+                "models": codex_models,
             },
         )
 

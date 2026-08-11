@@ -42,7 +42,7 @@ def test_response_request_accepts_text_and_function_subset() -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        {"model": "local", "input": [], "temperature": 0.2},
+        {"model": "local", "input": [], "top_p": 0.9},
         {
             "model": "local",
             "input": [
@@ -57,10 +57,58 @@ def test_response_request_accepts_text_and_function_subset() -> None:
         {
             "model": "local",
             "input": "hello",
-            "tools": [{"type": "web_search"}],
+            "tools": [{"type": "file_search"}],
         },
     ],
 )
 def test_response_request_rejects_unsupported_or_invalid_fields(payload) -> None:
     with pytest.raises(ValidationError):
         ResponseCreateRequest.model_validate(payload)
+
+
+def test_response_request_accepts_additional_tools_in_input() -> None:
+    request = ResponseCreateRequest.model_validate(
+        {
+            "model": "local-code-worker/auto",
+            "input": [
+                {
+                    "type": "additional_tools",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "shell_command",
+                            "description": "Run a command",
+                            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+                            "strict": True,
+                        }
+                    ],
+                },
+                {"type": "message", "role": "user", "content": "hello"},
+            ],
+        }
+    )
+    assert len(request.input) == 2
+    assert request.input[0].type == "additional_tools"
+    assert request.input[1].type == "message"
+
+
+def test_response_request_accepts_reasoning_context() -> None:
+    request = ResponseCreateRequest.model_validate(
+        {
+            "model": "local-code-worker/auto",
+            "input": "hello",
+            "reasoning": {"effort": "high", "summary": "auto", "context": "all_turns"},
+        }
+    )
+    assert request.reasoning.context == "all_turns"
+
+
+def test_response_request_accepts_text_verbosity() -> None:
+    request = ResponseCreateRequest.model_validate(
+        {
+            "model": "local-code-worker/auto",
+            "input": "hello",
+            "text": {"verbosity": "low"},
+        }
+    )
+    assert request.text.verbosity == "low"

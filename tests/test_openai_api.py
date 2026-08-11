@@ -194,6 +194,45 @@ def test_openai_models_endpoint(api_server: int) -> None:
     assert {model["owned_by"] for model in payload["data"]} == {"local-code-worker"}
 
 
+def test_codex_model_catalog_has_required_fields(api_server: int) -> None:
+    status, _, content = request(api_server, "GET", "/v1/models")
+    payload = json.loads(content)
+
+    assert status == 200
+    assert "models" in payload, "Codex model catalog requires 'models' field"
+    codex_models = payload["models"]
+    assert len(codex_models) == 4
+
+    required_fields = [
+        "slug",
+        "display_name",
+        "description",
+        "default_reasoning_level",
+        "supported_reasoning_levels",
+        "shell_type",
+        "visibility",
+        "supported_in_api",
+        "priority",
+        "base_instructions",
+        "model_messages",
+        "default_reasoning_summary",
+        "apply_patch_tool_type",
+        "truncation_policy",
+        "context_window",
+        "max_context_window",
+        "effective_context_window_percent",
+        "input_modalities",
+        "use_responses_lite",
+        "tool_mode",
+        "multi_agent_version",
+    ]
+    for model in codex_models:
+        for field in required_fields:
+            assert field in model, f"Model {model['slug']} missing required field: {field}"
+        assert model["slug"].startswith("local-code-worker/")
+        assert model["model_messages"]["instructions_template"]
+
+
 @pytest.mark.parametrize("size", [64 * 1024, 256 * 1024, 1024 * 1024, 5 * 1024 * 1024])
 def test_responses_accepts_large_request_bodies(api_server: int, size: int) -> None:
     status, _, content = request(
