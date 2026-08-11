@@ -1,4 +1,4 @@
-﻿"""Adapt Responses API requests to provider requests with tool support."""
+"""Adapt Responses API requests to provider requests with tool support."""
 
 from __future__ import annotations
 
@@ -174,6 +174,16 @@ def adapt_response_request(
                 strict=tool.metadata.get("strict", True),
             )
         )
+
+    # Inject guidance when hosted web_search is available so the model
+    # prefers it over passthrough search tools (e.g. _search_documentation).
+    if ToolKind.WEB_SEARCH in {t.kind for t in hosted}:
+        _hint = (
+            "When you need to find current information, look up facts, "
+            "search the web, or answer questions requiring up-to-date knowledge, "
+            "use the web_search tool. Do NOT use other search tools for web searches."
+        )
+        messages.append(ProviderMessage(role="developer", content=_hint))
 
     # Handle tool_choice
     tool_choice = (
