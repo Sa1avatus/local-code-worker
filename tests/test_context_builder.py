@@ -21,7 +21,7 @@ def task(root: Path, prompt_format: PromptFormat = PromptFormat.XML) -> WorkerTa
 
 def test_xml_execution_contract_separates_dependencies_and_task(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "types.py").write_text('class User: pass\n', encoding="utf-8")
+    (tmp_path / "src" / "types.py").write_text("class User: pass\n", encoding="utf-8")
 
     context, statistics = build_context(task(tmp_path))
 

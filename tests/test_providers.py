@@ -172,9 +172,7 @@ def test_ollama_stream_cancellation_closes_http_stream() -> None:
     tracking_stream = TrackingStream()
     provider = OllamaProvider(
         ollama_settings(),
-        httpx.MockTransport(
-            lambda request: httpx.Response(200, stream=tracking_stream)
-        ),
+        httpx.MockTransport(lambda request: httpx.Response(200, stream=tracking_stream)),
     )
     request = ProviderRequest(
         messages=[ProviderMessage(role="user", content="hello")],
@@ -369,9 +367,7 @@ def test_ollama_text_tool_envelope_does_not_allow_unknown_function() -> None:
             lambda request: httpx.Response(
                 200,
                 json={
-                    "message": {
-                        "content": '<tools>{"name":"unknown","arguments":{}}</tools>'
-                    },
+                    "message": {"content": '<tools>{"name":"unknown","arguments":{}}</tools>'},
                     "done": True,
                 },
             )
@@ -479,8 +475,7 @@ def test_openai_stream_emits_ordered_events_and_ttft() -> None:
                 200,
                 text="\n".join(
                     [
-                        'data: {"choices":[{"delta":{"content":"hel"},'
-                        '"finish_reason":null}]}',
+                        'data: {"choices":[{"delta":{"content":"hel"},"finish_reason":null}]}',
                         'data: {"choices":[{"delta":{"content":"lo"},'
                         '"finish_reason":"stop"}],"usage":{"prompt_tokens":2,'
                         '"completion_tokens":1}}',
@@ -526,9 +521,7 @@ def test_openai_stream_cancellation_closes_http_stream() -> None:
     tracking_stream = TrackingStream()
     provider = OpenAICompatibleProvider(
         openai_settings(),
-        httpx.MockTransport(
-            lambda request: httpx.Response(200, stream=tracking_stream)
-        ),
+        httpx.MockTransport(lambda request: httpx.Response(200, stream=tracking_stream)),
     )
     request = ProviderRequest(
         messages=[ProviderMessage(role="user", content="hello")],
@@ -819,9 +812,7 @@ def test_ollama_pull_model_rejects_invalid_or_truncated_stream(
 def test_ollama_pull_model_http_error_does_not_expose_body() -> None:
     provider = OllamaProvider(
         ollama_settings(),
-        httpx.MockTransport(
-            lambda request: httpx.Response(500, text="SENSITIVE-RESPONSE-BODY")
-        ),
+        httpx.MockTransport(lambda request: httpx.Response(500, text="SENSITIVE-RESPONSE-BODY")),
     )
     with pytest.raises(ProviderError) as captured:
         list(provider.pull_model("qwen:test"))

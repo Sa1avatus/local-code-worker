@@ -30,12 +30,19 @@ from .responses.schemas import (
 from .responses.state import ResponseStateStore
 from .responses.streaming import ResponseStreamEvent, encode_sse, map_provider_events
 from .routing.gateway import resolve_gateway_fallback, resolve_gateway_route
+from .routing.leases import create_route_lease, escalate_route_lease, escalation_reason_for
+from .routing.logging import log_escalation, log_routing_decision
+from .routing.models import RoutingMode
 from .routing.routellm_adapter import ROUTELLM_BACKENDS
 from .system_metrics import read_system_metrics
 from .usage_statistics import (
+    get_routing_plan,
+    record_escalation,
     record_model_call,
+    record_route_lease,
     record_routing_plan,
     summarize_model_calls,
+    summarize_routing,
     summarize_v2_statistics,
 )
 from .virtual_models import VIRTUAL_MODEL_REGISTRY
@@ -70,20 +77,21 @@ main{max-width:920px;margin:42px auto;padding:0 20px}.hero{display:flex;justify-
 label{display:block;color:var(--muted);font-size:13px;margin-bottom:6px}input,select,button,textarea{width:100%;border:1px solid var(--line);border-radius:10px;background:#0d1428;color:var(--text);padding:11px 12px;font:inherit}button{cursor:pointer;background:var(--accent);color:#081126;border:0;font-weight:750}button.secondary{background:#243252;color:var(--text)}button:disabled{opacity:.45;cursor:not-allowed}.actions{display:flex;gap:12px;margin-top:18px}.status{min-height:24px;margin:12px 0 0;color:var(--muted)}.ok{color:var(--ok)}.bad{color:var(--bad)}textarea{height:150px;resize:vertical;font-family:ui-monospace,monospace}.keyrow{display:flex;gap:9px}.keyrow input{flex:1}.keyrow button{width:auto}.pill{padding:5px 9px;border:1px solid var(--line);border-radius:99px;color:var(--muted);font-size:12px}@media(max-width:650px){.grid{grid-template-columns:1fr}.wide{grid-column:auto}.hero{display:block}.actions{flex-direction:column}}
 .tiers{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.tier{padding:16px;border:1px solid var(--line);border-radius:14px;background:#0d1428}.tier h3{margin:0 0 2px}.tier p{font-size:12px;margin:0 0 12px}.tier label{margin-top:9px}.check{display:flex;align-items:center;gap:8px}.check input{width:auto}.route-head{display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;margin-bottom:16px}@media(max-width:850px){.tiers{grid-template-columns:1fr}.route-head{grid-template-columns:1fr}}
 </style></head><body><main><div class="hero"><div><h1>Local Code Worker</h1><p>Провайдеры, ключи и локальные модели — в одном локальном интерфейсе.</p></div><span class="pill" id="health">проверка…</span></div>
-<section class="card" id="routingSettings"><h2 style="margin-top:0">Маршрутизация моделей</h2><p>Запрос начинается с локальных уровней. STRONG используйте как облачную страховку, если локальные модели не справились.</p><div class="route-head"><div><label for="routeMode">Режим</label><select id="routeMode"><option value="router">Router — применять выбор</option><option value="observe_only">Observe only — только наблюдать</option><option value="legacy">Legacy — одна модель ниже</option></select></div><div class="check"><input id="routeLlm" type="checkbox"><label for="routeLlm">RouteLLM</label></div><div><label for="routeThreshold">Порог RouteLLM</label><input id="routeThreshold" type="number" min="0" max="1" step="0.05"></div></div><div class="tiers" id="tierCards"></div><datalist id="routingModels"></datalist><div class="actions"><button id="saveRouting">Сохранить маршрутизацию</button><button class="secondary" id="discoverRouting">Найти локальные модели</button></div><div class="status" id="routingStatus"></div></section>
+<section class="card" id="routingSettings"><h2 style="margin-top:0">Маршрутизация моделей</h2><p>Запрос начинается с локальных уровней. STRONG используйте как облачную страховку, если локальные модели не справились.</p><div class="route-head"><div><label for="routeMode">Режим</label><select id="routeMode"><option value="router">Router — применять выбор</option><option value="route_llm">RouteLLM policy</option><option value="shadow">Shadow — только сравнивать</option><option value="canary">Canary — стабильная выборка</option><option value="observe_only">Observe only — совместимость</option><option value="legacy">Legacy — одна модель ниже</option></select></div><div class="check"><input id="routeLlm" type="checkbox"><label for="routeLlm">RouteLLM</label></div><div><label for="routeThreshold">Старый порог RouteLLM</label><input id="routeThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="localThreshold">LOCAL threshold</label><input id="localThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="strongThreshold">STRONG threshold</label><input id="strongThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="canaryPercent">Canary, %</label><input id="canaryPercent" type="number" min="0" max="100" step="1"></div><div><label for="maxEscalations">Максимум эскалаций</label><input id="maxEscalations" type="number" min="0" max="10" step="1"></div></div><div class="tiers" id="tierCards"></div><div class="actions"><button id="saveRouting">Сохранить маршрутизацию</button><button class="secondary" id="discoverRouting">Найти локальные модели</button></div><div class="status" id="routingStatus"></div></section>
 <section class="card"><div class="grid"><div><label for="provider">Провайдер</label><select id="provider"><option value="ollama">Ollama (локально)</option><option value="openai-compatible">OpenAI-compatible API</option></select></div><div><label for="baseUrl">Base URL</label><input id="baseUrl"></div><div><label for="model">Модель</label><select id="model"></select></div><div><label for="contextLength">Контекст (токены)</label><input id="contextLength" type="number" min="512" max="131072" step="512"></div><div id="pullBlock"><label for="pullModel">Имя модели для скачивания (необязательно)</label><input id="pullModel" placeholder="qwen2.5-coder:7b-instruct-q5_K_M"></div><div id="keyBlock"><label for="apiKey">API-ключ (пусто = сохранить текущий)</label><div class="keyrow"><input id="apiKey" type="password" autocomplete="new-password" placeholder="••••••••"><button class="secondary" id="clearKey" type="button">Удалить</button></div></div></div>
-<div class="actions"><button id="save">Сохранить и проверить</button><button class="secondary" id="refresh">Обновить модели</button><button class="secondary" id="pull">Скачать модель</button></div><div class="status" id="status"></div><textarea id="progress" readonly placeholder="Прогресс загрузки Ollama…"></textarea></section><section class="card" style="margin-top:18px"><div class="hero" style="margin-bottom:12px"><div><h2 style="margin:0">Мониторинг системы и моделей</h2><p style="margin:4px 0 0">Обновляется каждые 15 секунд.</p></div><span class="pill" id="runtimeUpdated">проверка…</span></div><div class="grid" id="metrics"></div><div class="status" id="runtime">Проверка состояния Ollama…</div></section><section class="card" style="margin-top:18px"><h2 style="margin:0">Статистика обращений</h2><p>Токены, средняя скорость и проверка предложенного кода по моделям.</p><div class="grid" id="usageStats"></div></section></main>
+<div class="actions"><button id="save">Сохранить и проверить</button><button class="secondary" id="refresh">Обновить модели</button><button class="secondary" id="pull">Скачать модель</button></div><div class="status" id="status"></div><textarea id="progress" readonly placeholder="Прогресс загрузки Ollama…"></textarea></section><section class="card" style="margin-top:18px"><div class="hero" style="margin-bottom:12px"><div><h2 style="margin:0">Мониторинг системы и моделей</h2><p style="margin:4px 0 0">Обновляется каждые 15 секунд.</p></div><span class="pill" id="runtimeUpdated">проверка…</span></div><div class="grid" id="metrics"></div><div class="status" id="runtime">Проверка состояния Ollama…</div></section><section class="card" style="margin-top:18px"><h2 style="margin:0">Маршрутизация</h2><p>Распределение, эскалации, latency и экономия cloud tokens.</p><div class="grid" id="routerMetrics"></div></section><section class="card" style="margin-top:18px"><h2 style="margin:0">Статистика обращений</h2><p>Токены, средняя скорость и проверка предложенного кода по моделям.</p><div class="grid" id="usageStats"></div></section></main>
 <script>
-const $=id=>document.getElementById(id), provider=$('provider'), baseUrl=$('baseUrl'), model=$('model'), contextLength=$('contextLength'), pullModel=$('pullModel'), apiKey=$('apiKey'), status=$('status'), progress=$('progress'), runtime=$('runtime'), runtimeUpdated=$('runtimeUpdated'), metrics=$('metrics'), usageStats=$('usageStats');let clearKey=false;
+const $=id=>document.getElementById(id), provider=$('provider'), baseUrl=$('baseUrl'), model=$('model'), contextLength=$('contextLength'), pullModel=$('pullModel'), apiKey=$('apiKey'), status=$('status'), progress=$('progress'), runtime=$('runtime'), runtimeUpdated=$('runtimeUpdated'), metrics=$('metrics'), routerMetrics=$('routerMetrics'), usageStats=$('usageStats');let clearKey=false;
 const tierNames=['local','mid','strong'],tierLabels={local:'LOCAL',mid:'MID',strong:'STRONG'},tierHelp={local:'Первая локальная модель: быстрые и простые задачи.',mid:'Локальная модель для рассуждений и сложного исполнения.',strong:'Последний уровень; здесь можно указать облачную модель.'},clearedTierKeys=new Set();
 function routingMessage(text,ok=true){const node=$('routingStatus');node.textContent=text;node.className='status '+(ok?'ok':'bad')}
-function tierCard(name){const card=document.createElement('div');card.className='tier';card.dataset.tier=name;card.innerHTML=`<h3>${tierLabels[name]}</h3><p>${tierHelp[name]}</p><div class="check"><input id="${name}Enabled" type="checkbox"><label for="${name}Enabled">Уровень включён</label></div><label for="${name}Provider">Провайдер</label><select id="${name}Provider"><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI-compatible</option></select><label for="${name}BaseUrl">Base URL</label><input id="${name}BaseUrl"><label for="${name}Model">Модель</label><input id="${name}Model" list="routingModels"><label for="${name}Context">Контекст</label><input id="${name}Context" type="number" min="512" max="131072" step="512"><label for="${name}Key">API-ключ (пусто = оставить)</label><div class="keyrow"><input id="${name}Key" type="password" autocomplete="new-password"><button class="secondary" type="button" data-clear-key="${name}">×</button></div><small id="${name}KeyState"></small>`;return card}
+function tierCard(name){const card=document.createElement('div');card.className='tier';card.dataset.tier=name;card.innerHTML=`<h3>${tierLabels[name]}</h3><p>${tierHelp[name]}</p><div class="check"><input id="${name}Enabled" type="checkbox"><label for="${name}Enabled">Уровень включён</label></div><label for="${name}Provider">Провайдер</label><select id="${name}Provider"><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI-compatible</option></select><label for="${name}BaseUrl">Base URL</label><input id="${name}BaseUrl"><label for="${name}Model">Модель</label><select id="${name}Model"></select><label for="${name}Context">Контекст</label><input id="${name}Context" type="number" min="512" max="131072" step="512"><label for="${name}Key">API-ключ (пусто = оставить)</label><div class="keyrow"><input id="${name}Key" type="password" autocomplete="new-password"><button class="secondary" type="button" data-clear-key="${name}">×</button></div><small id="${name}KeyState"></small>`;return card}
 for(const name of tierNames)$('tierCards').appendChild(tierCard(name));
-function fillTier(name,data){$(name+'Enabled').checked=data.enabled;$(name+'Provider').value=data.provider;$(name+'BaseUrl').value=data.base_url||'';$(name+'Model').value=data.model;$(name+'Context').value=data.context_length||32768;$(name+'Key').value='';$(name+'KeyState').textContent=data.api_key_configured?'Ключ сохранён':'Ключ не задан'}
+function setTierModel(name,value){const select=$(name+'Model');if(value&&![...select.options].some(option=>option.value===value)){const option=document.createElement('option');option.value=value;option.textContent=value;select.appendChild(option)}select.value=value||''}
+function fillTier(name,data){$(name+'Enabled').checked=data.enabled;$(name+'Provider').value=data.provider;$(name+'BaseUrl').value=data.base_url||'';setTierModel(name,data.model);$(name+'Context').value=data.context_length||32768;$(name+'Key').value='';$(name+'KeyState').textContent=data.api_key_configured?'Ключ сохранён':'Ключ не задан'}
 function tierPayload(name){const key=$(name+'Key').value,clear=clearedTierKeys.has(name),action=clear?'clear':key?'replace':'keep';return {enabled:$(name+'Enabled').checked,provider:$(name+'Provider').value,base_url:$(name+'BaseUrl').value,model:$(name+'Model').value,context_length:Number($(name+'Context').value),api_key_action:action,api_key:action==='replace'?key:null}}
-async function loadRouting(){try{const data=await jsonFetch('/api/v2/settings');$('routeMode').value=data.mode;$('routeLlm').checked=data.routellm_enabled;$('routeThreshold').value=data.routellm_threshold;for(const name of tierNames)fillTier(name,data.tiers[name]);routingMessage('Маршрутизация загружена')}catch(e){routingMessage(e.message,false)}}
-async function saveRouting(){try{const tiers=Object.fromEntries(tierNames.map(name=>[name,tierPayload(name)])),data=await jsonFetch('/api/v2/settings',{method:'PUT',body:JSON.stringify({mode:$('routeMode').value,tiers,routellm_enabled:$('routeLlm').checked,routellm_threshold:Number($('routeThreshold').value)})});clearedTierKeys.clear();for(const name of tierNames)fillTier(name,data.tiers[name]);routingMessage('Маршрутизация сохранена',true)}catch(e){routingMessage(e.message,false)}}
-async function discoverRouting(){try{const data=await jsonFetch('/api/models'),list=$('routingModels');list.replaceChildren();for(const name of data.models){const option=document.createElement('option');option.value=name;list.appendChild(option)}routingMessage(`Найдено локальных моделей: ${data.models.length}`)}catch(e){routingMessage(e.message,false)}}
+async function loadRouting(){try{const data=await jsonFetch('/api/v2/settings');$('routeMode').value=data.mode;$('routeLlm').checked=data.routellm_enabled;$('routeThreshold').value=data.routellm_threshold;$('localThreshold').value=data.local_threshold;$('strongThreshold').value=data.strong_threshold;$('canaryPercent').value=data.canary_percent;$('maxEscalations').value=data.max_escalations_per_lease;for(const name of tierNames)fillTier(name,data.tiers[name]);await discoverRouting(false);routingMessage('Маршрутизация загружена')}catch(e){routingMessage(e.message,false)}}
+async function saveRouting(){try{const tiers=Object.fromEntries(tierNames.map(name=>[name,tierPayload(name)])),data=await jsonFetch('/api/v2/settings',{method:'PUT',body:JSON.stringify({mode:$('routeMode').value,tiers,routellm_enabled:$('routeLlm').checked,routellm_threshold:Number($('routeThreshold').value),local_threshold:Number($('localThreshold').value),strong_threshold:Number($('strongThreshold').value),canary_percent:Number($('canaryPercent').value),max_escalations_per_lease:Number($('maxEscalations').value)})});clearedTierKeys.clear();for(const name of tierNames)fillTier(name,data.tiers[name]);routingMessage('Маршрутизация сохранена',true)}catch(e){routingMessage(e.message,false)}}
+async function discoverRouting(announce=true){try{const data=await jsonFetch('/api/models'),models=[...new Set(data.models.filter(name=>typeof name==='string'&&name.trim()).map(name=>name.trim()))];for(const tier of tierNames){const select=$(tier+'Model'),current=select.value;select.replaceChildren();for(const name of models){const option=document.createElement('option');option.value=name;option.textContent=name;select.appendChild(option)}setTierModel(tier,current)}if(announce)routingMessage(`Найдено локальных моделей: ${models.length}`)}catch(e){if(announce)routingMessage(e.message,false)}}
 function message(text,ok=true){status.textContent=text;status.className='status '+(ok?'ok':'bad')}
 function sync(){const local=provider.value==='ollama';$('keyBlock').style.display=local?'none':'block';$('pullBlock').style.display=local?'block':'none';$('pull').disabled=!local;if(local&&(!baseUrl.value||baseUrl.value.includes('example')))baseUrl.value='http://localhost:11434'}
 async function jsonFetch(url,options={}){const response=await fetch(url,{headers:{'Content-Type':'application/json'},...options});const data=await response.json();if(!response.ok)throw new Error(data.error||response.statusText);return data}
@@ -91,8 +99,9 @@ function bytes(value){return typeof value==='number'?(value/1024/1024/1024).toFi
 function meter(title,value,caption,percent=0){const card=document.createElement('div');card.style.cssText='padding:14px;border:1px solid var(--line);border-radius:12px;background:#0d1428';const heading=document.createElement('div');heading.style.color='var(--muted)';heading.textContent=title;const number=document.createElement('div');number.style.cssText='font-size:25px;font-weight:750;margin-top:3px;color:var(--accent)';number.textContent=value;const bar=document.createElement('div');bar.style.cssText='height:7px;background:#253252;border-radius:99px;margin:10px 0 7px;overflow:hidden';const fill=document.createElement('div');fill.style.cssText=`height:100%;width:${Math.max(0,Math.min(100,percent))}%;background:linear-gradient(90deg,var(--accent),var(--ok));border-radius:inherit;transition:width .35s ease`;bar.appendChild(fill);const text=document.createElement('div');text.style.color='var(--muted)';text.textContent=caption;card.append(heading,number,bar,text);return card}
 function renderMetrics(data){metrics.replaceChildren();const gpu=data.gpus&&data.gpus[0];if(gpu){metrics.append(meter(gpu.name,`${gpu.usage_percent}% GPU`,`${gpu.temperature_celsius} °C · ${bytes(gpu.memory_used_bytes)} / ${bytes(gpu.memory_total_bytes)} VRAM`,gpu.usage_percent),meter('Питание и частота',`${gpu.power_watts} Вт`,`лимит ${gpu.power_limit_watts} Вт · ${gpu.clock_mhz} МГц`,gpu.power_limit_watts?gpu.power_watts/gpu.power_limit_watts*100:0))}else{metrics.append(meter('GPU','Недоступна','Docker не передал NVIDIA NVML в контейнер'))}metrics.append(meter('CPU контейнера',`${data.cpu.usage_percent}% CPU`,'текущая загрузка',data.cpu.usage_percent),meter('RAM контейнера',`${data.memory.usage_percent}% RAM`,`${bytes(data.memory.used_bytes)} / ${bytes(data.memory.total_bytes)}`,data.memory.usage_percent))}
 function renderUsage(data){usageStats.replaceChildren();if(!data.models.length){usageStats.textContent='Пока нет завершённых обращений.';return}for(const item of data.models){usageStats.append(meter(item.model,`${item.completion_tokens} выходных токенов`,`${item.requests} запросов · ${item.prompt_tokens} входных · ${item.tokens_per_second} ток/с · код: ${item.code_valid} успешно, ${item.code_invalid} с ошибкой`))}}
+function renderRouting(data){routerMetrics.replaceChildren();const m=data.metrics,routes=Object.entries(m.requests_by_route||{}).map(([k,v])=>`${k.toUpperCase()}: ${v}`).join(' · ')||'нет решений',rates=Object.entries(m.success_rate_by_tier||{}).map(([k,v])=>`${k.toUpperCase()}: ${Math.round(v*100)}%`).join(' · ')||'нет данных',latency=Object.entries(m.average_latency_ms_by_tier||{}).map(([k,v])=>`${k.toUpperCase()}: ${Math.round(v)} ms`).join(' · ')||'нет данных';routerMetrics.append(meter(`Режим: ${data.mode}`,`${m.router_decisions_total} решений`,routes),meter('Эскалации',String(m.escalations_total),Object.entries(m.escalations_by_reason||{}).map(([k,v])=>`${k}: ${v}`).join(' · ')||'нет'),meter('Success rate',rates,latency),meter('Cloud tokens',String(m.cloud_tokens||0),`оценочно сохранено: ${m.cloud_tokens_saved||0}`))}
 function runtimeCard(item){const total=item.size||0,vram=item.size_vram||0,gpu=total?Math.round(vram/total*100):0,card=document.createElement('div');card.style.cssText='padding:12px;border:1px solid var(--line);border-radius:10px;margin-top:8px';const title=document.createElement('strong');title.textContent=item.name;const details=document.createElement('div');details.style.color='var(--muted)';details.textContent=`GPU: ${gpu}% · CPU: ${100-gpu}% · VRAM модели: ${bytes(vram)} из ${bytes(total)} · Контекст: ${item.context_length||'—'}`;card.append(title,details);return card}
-async function runtimeStatus(){try{const [data,system,usage]=await Promise.all([jsonFetch('/api/runtime'),jsonFetch('/api/system'),jsonFetch('/api/statistics')]);renderMetrics(system);renderUsage(usage);runtime.replaceChildren();if(data.provider!=='ollama'){runtime.textContent='Статус размещения доступен только для Ollama.'}else if(!data.models.length){runtime.textContent='Сейчас ни одна модель не загружена в Ollama.'}else{for(const item of data.models)runtime.appendChild(runtimeCard(item));}runtimeUpdated.textContent='обновлено '+new Date().toLocaleTimeString()}catch(e){runtime.textContent='Не удалось получить статус: '+e.message;runtimeUpdated.textContent='ошибка'}}
+async function runtimeStatus(){try{const [data,system,usage,routing]=await Promise.all([jsonFetch('/api/runtime'),jsonFetch('/api/system'),jsonFetch('/api/statistics'),jsonFetch('/api/v2/router/status')]);renderMetrics(system);renderUsage(usage);renderRouting(routing);runtime.replaceChildren();if(data.provider!=='ollama'){runtime.textContent='Статус размещения доступен только для Ollama.'}else if(!data.models.length){runtime.textContent='Сейчас ни одна модель не загружена в Ollama.'}else{for(const item of data.models)runtime.appendChild(runtimeCard(item));}runtimeUpdated.textContent='обновлено '+new Date().toLocaleTimeString()}catch(e){runtime.textContent='Не удалось получить статус: '+e.message;runtimeUpdated.textContent='ошибка'}}
 async function load(){try{const data=await jsonFetch('/api/settings');provider.value=data.provider;baseUrl.value=data.base_url;contextLength.value=data.context_length;sync();await models(data.model||'');await runtimeStatus();$('health').textContent=data.api_key_configured?'ключ сохранён':'локальная конфигурация'}catch(e){message(e.message,false)}}
 async function save(){try{const action=clearKey?'clear':apiKey.value?'replace':'keep';const data=await jsonFetch('/api/settings',{method:'PUT',body:JSON.stringify({provider:provider.value,base_url:baseUrl.value,model:model.value,context_length:Number(contextLength.value),api_key_action:action,api_key:action==='replace'?apiKey.value:null})});apiKey.value='';clearKey=false;message('Настройки сохранены. Выгрузите модель через ollama stop, чтобы применить новый контекст.',true);$('health').textContent=data.api_key_configured?'ключ сохранён':'готово'}catch(e){message(e.message,false)}}
 async function models(preferredModel=model.value){preferredModel=typeof preferredModel==='string'?preferredModel:'';try{const data=await jsonFetch('/api/models');const names=[...new Set((Array.isArray(data.models)?data.models:[]).filter(name=>typeof name==='string'&&name.trim()).map(name=>name.trim()))];if(preferredModel&&!names.includes(preferredModel))names.unshift(preferredModel);model.replaceChildren();for(const name of names){const option=document.createElement('option');option.value=name;option.textContent=name;model.appendChild(option)}if(preferredModel)model.value=preferredModel;message(`Найдено моделей: ${data.models.length}`)}catch(e){message(e.message,false)}}
@@ -296,12 +305,16 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             max_output_characters=settings.llm_max_output_characters,
             json_mode=settings.llm_json_mode,
         )
+        route_lease = None
         if request.previous_response_id is not None:
-            previous_messages = RESPONSE_STATE.get(request.previous_response_id)
+            previous = RESPONSE_STATE.get_stored(request.previous_response_id)
+            previous_messages = list(previous.messages)
+            route_lease = previous.route_lease
             provider_request = provider_request.model_copy(
                 update={"messages": previous_messages + provider_request.messages}
             )
         response_id = f"resp_{uuid.uuid4().hex}"
+        request_id = f"req_{uuid.uuid4().hex}"
         routing_settings = load_gateway_routing_settings(self.env_path)
         routellm_backend = (
             ROUTELLM_BACKENDS.get(routing_settings.routellm_checkpoint_path)
@@ -314,7 +327,20 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             settings,
             routing_settings,
             routellm_backend,
+            route_lease,
+            response_id,
         )
+        if routing_settings.mode is not RoutingMode.LEGACY:
+            if route_lease is None:
+                route_lease = create_route_lease(response_id, routing_plan.actual)
+                record_route_lease(route_lease)
+            routing_plan = routing_plan.model_copy(
+                update={
+                    "actual": routing_plan.actual.model_copy(
+                        update={"lease_id": route_lease.lease_id}
+                    )
+                }
+            )
         settings = self._settings_with_tier_secret(settings)
         provider = create_provider(settings)
         message_id = f"msg_{uuid.uuid4().hex}"
@@ -324,23 +350,59 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 try:
                     result = CanonicalProviderAdapter(provider).complete(provider_request)
                     break
-                except (ProviderError, WorkerError, OSError):
+                except (ProviderError, WorkerError, OSError) as error:
+                    record_model_call(
+                        provider.last_generation_metadata,
+                        kind="response",
+                        outcome="failed",
+                        tier=routing_plan.actual.tier.value,
+                    )
                     fallback = resolve_gateway_fallback(
                         settings,
                         routing_settings,
+                        provider_request,
                         routing_plan.actual.tier,
                     )
                     if fallback is None:
                         record_routing_plan(response_id, routing_plan)
                         raise
                     settings, routing_plan = fallback
+                    if route_lease is not None:
+                        route_lease, escalation = escalate_route_lease(
+                            route_lease,
+                            routing_plan.actual,
+                            escalation_reason_for(error),
+                            request_id=request_id,
+                            response_id=response_id,
+                            max_escalations=routing_settings.max_escalations_per_lease,
+                        )
+                        record_escalation(escalation)
+                        record_route_lease(route_lease)
+                        log_escalation(escalation)
+                        routing_plan = routing_plan.model_copy(
+                            update={
+                                "actual": routing_plan.actual.model_copy(
+                                    update={"lease_id": route_lease.lease_id}
+                                )
+                            }
+                        )
                     settings = self._settings_with_tier_secret(settings)
                     provider = create_provider(settings)
             record_routing_plan(response_id, routing_plan)
+            log_routing_decision(
+                request_id=request_id,
+                response_id=response_id,
+                previous_response_id=request.previous_response_id,
+                decision=routing_plan.actual,
+            )
             record_model_call(
                 provider.last_generation_metadata,
                 kind="response",
                 outcome="completed",
+                request_id=response_id,
+                tier=routing_plan.actual.tier.value,
+                escalation_count=route_lease.escalation_count if route_lease else 0,
+                tool_count=len(request.tools),
             )
             self._send_json(
                 HTTPStatus.OK,
@@ -357,6 +419,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                     response_id,
                     provider_request.messages
                     + [ProviderMessage(role="assistant", content=result.content)],
+                    route_lease,
                 )
             return
 
@@ -365,16 +428,36 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             try:
                 first_provider_event = next(provider_events)
                 break
-            except (ProviderError, WorkerError, OSError):
+            except (ProviderError, WorkerError, OSError) as error:
                 fallback = resolve_gateway_fallback(
                     settings,
                     routing_settings,
+                    provider_request,
                     routing_plan.actual.tier,
                 )
                 if fallback is None:
                     record_routing_plan(response_id, routing_plan)
                     raise
                 settings, routing_plan = fallback
+                if route_lease is not None:
+                    route_lease, escalation = escalate_route_lease(
+                        route_lease,
+                        routing_plan.actual,
+                        escalation_reason_for(error),
+                        request_id=request_id,
+                        response_id=response_id,
+                        max_escalations=routing_settings.max_escalations_per_lease,
+                    )
+                    record_escalation(escalation)
+                    record_route_lease(route_lease)
+                    log_escalation(escalation)
+                    routing_plan = routing_plan.model_copy(
+                        update={
+                            "actual": routing_plan.actual.model_copy(
+                                update={"lease_id": route_lease.lease_id}
+                            )
+                        }
+                    )
                 settings = self._settings_with_tier_secret(settings)
                 provider = create_provider(settings)
             except StopIteration as error:
@@ -383,6 +466,12 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                     category="empty_stream",
                 ) from error
         record_routing_plan(response_id, routing_plan)
+        log_routing_decision(
+            request_id=request_id,
+            response_id=response_id,
+            previous_response_id=request.previous_response_id,
+            decision=routing_plan.actual,
+        )
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -441,6 +530,10 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 provider.last_generation_metadata,
                 kind="response",
                 outcome="completed",
+                request_id=response_id,
+                tier=routing_plan.actual.tier.value,
+                escalation_count=route_lease.escalation_count if route_lease else 0,
+                tool_count=len(request.tools),
             )
         if request.store and completed_response is not None:
             RESPONSE_STATE.put(
@@ -452,6 +545,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                         content=completed_response.output_text,
                     )
                 ],
+                route_lease,
             )
 
     def do_GET(self) -> None:
@@ -501,6 +595,41 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 if baseline is not None and baseline < 0:
                     raise ValueError("baseline_cloud_tokens must be non-negative")
                 self._send_json(HTTPStatus.OK, summarize_v2_statistics(baseline))
+                return
+            if request_url.path == "/api/v2/router/metrics":
+                self._send_json(HTTPStatus.OK, summarize_routing())
+                return
+            if request_url.path == "/api/v2/router/status":
+                routing = public_gateway_settings(self.env_path)
+                routing["metrics"] = summarize_routing()
+                self._send_json(HTTPStatus.OK, routing)
+                return
+            if request_url.path == "/api/v2/router/decision":
+                response_id = parse_qs(request_url.query).get("response_id", [""])[-1]
+                if not response_id:
+                    raise ValueError("response_id is required")
+                plan = get_routing_plan(response_id)
+                if plan is None:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": "decision not found"})
+                else:
+                    self._send_json(
+                        HTTPStatus.OK,
+                        plan.model_dump(mode="json", exclude_none=True),
+                    )
+                return
+            if request_url.path == "/health":
+                self._send_json(HTTPStatus.OK, {"status": "ok"})
+                return
+            if request_url.path == "/ready":
+                routing = load_gateway_routing_settings(self.env_path)
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "status": "ready",
+                        "router_mode": routing.mode.value,
+                        "configured_tiers": [tier.value for tier in routing.tiers],
+                    },
+                )
                 return
             if request_url.path == "/api/health":
                 health = create_provider(self._settings()).check_connection()
@@ -589,7 +718,13 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
 
 
 def run_web_server(host: str = "127.0.0.1", port: int = 8765, env_path: Path = Path(".env")) -> int:
+    global RESPONSE_STATE
     initialize_container_settings(env_path)
+    state_values = dotenv_values(env_path)
+    RESPONSE_STATE = ResponseStateStore(
+        max_entries=int(str(state_values.get("GATEWAY_RESPONSE_STATE_MAX_ENTRIES") or 256)),
+        ttl_seconds=float(str(state_values.get("GATEWAY_RESPONSE_STATE_TTL_SECONDS") or 7200)),
+    )
     handler = type("ConfiguredWorkerWebHandler", (WorkerWebHandler,), {"env_path": env_path})
     server = ThreadingHTTPServer((host, port), handler)
     print(f"Local Code Worker UI: http://{host}:{port}")

@@ -1,14 +1,15 @@
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from ..routing.models import RoutingDecision, RoutingPlan
+from ..routing.models import EscalationEvent, RouteLease, RoutingDecision, RoutingPlan
 from .metrics import RequestMetrics, summarize_latencies
 from .models import ModelRequestTelemetry, TokenUsage, UsageProvenance
 from .savings import TokenSavings
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class TelemetryDatabase:
@@ -38,6 +39,9 @@ class TelemetryDatabase:
             if 2 not in applied_versions:
                 self._apply_version_two(connection)
                 connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (2,))
+            if 3 not in applied_versions:
+                self._apply_version_three(connection)
+                connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (3,))
 
     def record_request(self, telemetry: ModelRequestTelemetry) -> None:
         with self.connect() as connection:
@@ -115,8 +119,9 @@ class TelemetryDatabase:
                 INSERT INTO routing_decisions (
                     request_id, decision_kind, timestamp, tier, provider, model,
                     reason, confidence, method, rule_id, routellm_score,
-                    routing_backend_failure, policy_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    routing_backend_failure, policy_version, lease_id,
+                    capability_constraints, excluded_models
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -133,10 +138,122 @@ class TelemetryDatabase:
                         decision.routellm_score,
                         int(decision.routing_backend_failure),
                         decision.policy_version,
+                        decision.lease_id,
+                        json.dumps(decision.capability_constraints),
+                        json.dumps(decision.excluded_models),
                     )
                     for kind, decision in decisions
                 ],
             )
+
+    def record_route_lease(self, lease: RouteLease) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO route_leases (
+                    lease_id, root_response_id, current_route, current_model,
+                    created_at, updated_at, escalation_count, escalation_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(lease_id) DO UPDATE SET
+                    current_route=excluded.current_route,
+                    current_model=excluded.current_model,
+                    updated_at=excluded.updated_at,
+                    escalation_count=excluded.escalation_count,
+                    escalation_reason=excluded.escalation_reason
+                """,
+                (
+                    lease.lease_id,
+                    lease.root_response_id,
+                    lease.current_route.value,
+                    lease.current_model,
+                    lease.created_at,
+                    lease.updated_at,
+                    lease.escalation_count,
+                    lease.escalation_reason.value if lease.escalation_reason else None,
+                ),
+            )
+
+    def record_escalation(self, event: EscalationEvent) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO escalation_events (
+                    from_route, to_route, from_model, to_model, reason,
+                    request_id, response_id, lease_id, timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.from_route.value,
+                    event.to_route.value,
+                    event.from_model,
+                    event.to_model,
+                    event.reason.value,
+                    event.request_id,
+                    event.response_id,
+                    event.lease_id,
+                    event.timestamp,
+                ),
+            )
+
+    def summarize_routing(self) -> dict[str, object]:
+        with self.connect() as connection:
+            routes = connection.execute(
+                """
+                SELECT tier, COUNT(*) FROM routing_decisions
+                WHERE decision_kind = 'actual' GROUP BY tier
+                """
+            ).fetchall()
+            reasons = connection.execute(
+                "SELECT reason, COUNT(*) FROM escalation_events GROUP BY reason"
+            ).fetchall()
+            leases = connection.execute("SELECT COUNT(*) FROM route_leases").fetchone()[0]
+            requests = connection.execute(
+                """
+                SELECT tier, model, provider, COUNT(*), SUM(success),
+                       SUM(input_tokens), SUM(output_tokens), AVG(latency_ms)
+                FROM model_requests GROUP BY tier, model, provider
+                """
+            ).fetchall()
+        requests_by_model = {str(row[1]): int(row[3]) for row in requests}
+        tier_totals: dict[str, dict[str, float | int]] = {}
+        cloud_tokens = 0
+        non_cloud_tokens = 0
+        for tier, _model, provider, count, successes, inputs, outputs, latency in requests:
+            item = tier_totals.setdefault(
+                str(tier),
+                {"requests": 0, "successes": 0, "latency_total_ms": 0.0},
+            )
+            item["requests"] += int(count)
+            item["successes"] += int(successes or 0)
+            item["latency_total_ms"] += float(latency or 0) * int(count)
+            tokens = int(inputs or 0) + int(outputs or 0)
+            if str(provider) == "ollama":
+                non_cloud_tokens += tokens
+            else:
+                cloud_tokens += tokens
+        success_rates = {
+            tier: round(float(item["successes"]) / int(item["requests"]), 4)
+            for tier, item in tier_totals.items()
+            if int(item["requests"])
+        }
+        latency_by_tier = {
+            tier: round(float(item["latency_total_ms"]) / int(item["requests"]), 2)
+            for tier, item in tier_totals.items()
+            if int(item["requests"])
+        }
+        return {
+            "router_decisions_total": sum(int(row[1]) for row in routes),
+            "requests_by_route": {str(row[0]): int(row[1]) for row in routes},
+            "escalations_total": sum(int(row[1]) for row in reasons),
+            "escalations_by_reason": {str(row[0]): int(row[1]) for row in reasons},
+            "route_lease_created": int(leases),
+            "requests_by_model": requests_by_model,
+            "success_rate_by_tier": success_rates,
+            "average_latency_ms_by_tier": latency_by_tier,
+            "cloud_tokens": cloud_tokens,
+            "cloud_tokens_saved": non_cloud_tokens,
+            "cloud_tokens_saved_estimated": True,
+        }
 
     def get_routing_plan(self, request_id: str) -> RoutingPlan | None:
         with self.connect() as connection:
@@ -279,6 +396,50 @@ class TelemetryDatabase:
         )
 
     @staticmethod
+    def _apply_version_three(connection: sqlite3.Connection) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(routing_decisions)")}
+        for name, declaration in (
+            ("lease_id", "TEXT"),
+            ("capability_constraints", "TEXT NOT NULL DEFAULT '[]'"),
+            ("excluded_models", "TEXT NOT NULL DEFAULT '[]'"),
+        ):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE routing_decisions ADD COLUMN {name} {declaration}")
+        connection.execute(
+            """
+            CREATE TABLE route_leases (
+                lease_id TEXT PRIMARY KEY,
+                root_response_id TEXT NOT NULL,
+                current_route TEXT NOT NULL,
+                current_model TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                escalation_count INTEGER NOT NULL CHECK (escalation_count >= 0),
+                escalation_reason TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE escalation_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_route TEXT NOT NULL,
+                to_route TEXT NOT NULL,
+                from_model TEXT NOT NULL,
+                to_model TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                response_id TEXT NOT NULL,
+                lease_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX escalation_events_lease_idx ON escalation_events (lease_id)"
+        )
+
+    @staticmethod
     def _routing_decision_from_row(row: sqlite3.Row | tuple[object, ...]) -> RoutingDecision:
         return RoutingDecision(
             timestamp=row[2],
@@ -292,4 +453,7 @@ class TelemetryDatabase:
             routellm_score=row[10],
             routing_backend_failure=bool(row[11]),
             policy_version=row[12],
+            lease_id=row[13] if len(row) > 13 else None,
+            capability_constraints=tuple(json.loads(row[14])) if len(row) > 14 else (),
+            excluded_models=tuple(json.loads(row[15])) if len(row) > 15 else (),
         )

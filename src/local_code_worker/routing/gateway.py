@@ -3,10 +3,14 @@ from datetime import UTC, datetime
 from ..config import WorkerSettings
 from ..providers.base import ProviderRequest
 from ..virtual_models import ModelTier
+from .capabilities import capable_tiers
+from .leases import apply_route_lease
 from .models import (
     GatewayRoutingSettings,
+    RouteLease,
     RoutingDecision,
     RoutingMethod,
+    RoutingMode,
     RoutingPlan,
     TierConfig,
 )
@@ -47,6 +51,8 @@ def resolve_gateway_route(
     worker_settings: WorkerSettings,
     routing_settings: GatewayRoutingSettings,
     routellm_backend: RouteLlmBackend | None = None,
+    route_lease: RouteLease | None = None,
+    assignment_key: str | None = None,
 ) -> tuple[WorkerSettings, RoutingPlan]:
     plan = plan_routing(
         request,
@@ -58,13 +64,18 @@ def resolve_gateway_route(
         ),
         legacy_tier=ModelTier.LOCAL,
         routellm_backend=routellm_backend,
+        assignment_key=route_lease.root_response_id if route_lease is not None else assignment_key,
     )
+    if route_lease is not None and routing_settings.mode is not RoutingMode.LEGACY:
+        actual = apply_route_lease(route_lease, plan.actual, routing_settings)
+        plan = plan.model_copy(update={"actual": actual})
     return _apply_decision(worker_settings, routing_settings, plan.actual), plan
 
 
 def resolve_gateway_fallback(
     worker_settings: WorkerSettings,
     routing_settings: GatewayRoutingSettings,
+    request: ProviderRequest,
     failed_tier: ModelTier,
 ) -> tuple[WorkerSettings, RoutingPlan] | None:
     order = {
@@ -72,9 +83,10 @@ def resolve_gateway_fallback(
         ModelTier.MID: (ModelTier.STRONG,),
         ModelTier.STRONG: (),
     }
+    eligible_tiers, constraints, excluded_models = capable_tiers(request, routing_settings)
     for tier in order[failed_tier]:
         config = routing_settings.tiers.get(tier)
-        if config is None or not config.enabled:
+        if config is None or not config.enabled or tier not in eligible_tiers:
             continue
         decision = RoutingDecision(
             tier=tier,
@@ -86,6 +98,8 @@ def resolve_gateway_fallback(
             rule_id="runtime-fallback",
             timestamp=datetime.now(UTC).isoformat(),
             policy_version=routing_settings.policy_version,
+            capability_constraints=constraints,
+            excluded_models=excluded_models,
         )
         return (
             _apply_decision(worker_settings, routing_settings, decision),

@@ -105,6 +105,10 @@ class GatewaySettingsInput(BaseModel):
     tiers: dict[ModelTier, RoutingTierSettingsInput]
     routellm_enabled: bool = False
     routellm_threshold: float = Field(default=0.5, ge=0, le=1)
+    local_threshold: float = Field(default=0.3, ge=0, le=1)
+    strong_threshold: float = Field(default=0.7, ge=0, le=1)
+    canary_percent: int = Field(default=10, ge=0, le=100)
+    max_escalations_per_lease: int = Field(default=2, ge=0, le=10)
 
     @model_validator(mode="after")
     def validate_all_tiers(self) -> "GatewaySettingsInput":
@@ -112,4 +116,6 @@ class GatewaySettingsInput(BaseModel):
             raise ValueError("LOCAL, MID, and STRONG tier settings are required")
         if not any(tier.enabled for tier in self.tiers.values()):
             raise ValueError("At least one tier must be enabled")
+        if self.local_threshold > self.strong_threshold:
+            raise ValueError("local_threshold must not exceed strong_threshold")
         return self

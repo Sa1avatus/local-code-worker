@@ -1,9 +1,11 @@
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from ..exceptions import CapabilityError
 from ..providers.base import ProviderRequest
 from ..virtual_models import VIRTUAL_MODEL_REGISTRY, ModelTier
 from .analyzer import analyze_request
+from .capabilities import capable_tiers
 from .models import (
     GatewayRoutingSettings,
     RoutingDecision,
@@ -25,12 +27,18 @@ _FALLBACK_ORDER: dict[ModelTier, tuple[ModelTier, ...]] = {
 def _resolve_available_tier(
     requested_tier: ModelTier,
     settings: GatewayRoutingSettings,
+    eligible_tiers: set[ModelTier],
 ) -> tuple[ModelTier, TierConfig]:
+    if not any(config.enabled for config in settings.tiers.values()):
+        raise ValueError("routing requires at least one enabled tier")
     for tier in _FALLBACK_ORDER[requested_tier]:
         config = settings.tiers.get(tier)
-        if config is not None and config.enabled:
+        if config is not None and config.enabled and tier in eligible_tiers:
             return tier, config
-    raise ValueError("routing requires at least one enabled tier")
+    raise CapabilityError(
+        "no enabled routing tier satisfies the request capabilities",
+        category="capability_mismatch",
+    )
 
 
 def route_request(
@@ -70,11 +78,12 @@ def route_request(
             except Exception:
                 routing_backend_failure = True
             else:
-                requested_tier = (
-                    ModelTier.STRONG
-                    if routellm_score >= settings.routellm_threshold
-                    else ModelTier.LOCAL
-                )
+                if routellm_score <= settings.local_threshold:
+                    requested_tier = ModelTier.LOCAL
+                elif routellm_score >= settings.strong_threshold:
+                    requested_tier = ModelTier.STRONG
+                else:
+                    requested_tier = ModelTier.MID
                 method = RoutingMethod.ROUTELLM
                 confidence = min(
                     1.0,
@@ -104,7 +113,8 @@ def route_request(
                 reason = f"{reason} Cloud STRONG is reserved for fallback after local failure."
                 break
 
-    selected_tier, config = _resolve_available_tier(requested_tier, settings)
+    eligible_tiers, capability_constraints, excluded_models = capable_tiers(request, settings)
+    selected_tier, config = _resolve_available_tier(requested_tier, settings, eligible_tiers)
     if selected_tier is not requested_tier:
         method = RoutingMethod.FALLBACK
         reason = (
@@ -123,4 +133,6 @@ def route_request(
         routing_backend_failure=routing_backend_failure,
         timestamp=clock().astimezone(UTC).isoformat(),
         policy_version=settings.policy_version,
+        capability_constraints=capability_constraints,
+        excluded_models=excluded_models,
     )

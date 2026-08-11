@@ -17,9 +17,9 @@ def load_system_prompt(
         )
     else:
         prompt_name = (
-        "implementation_patch_system.txt"
-        if proposal_format is ProposalFormat.PATCH
-        else "implementation_system.txt"
+            "implementation_patch_system.txt"
+            if proposal_format is ProposalFormat.PATCH
+            else "implementation_system.txt"
         )
     prompt_path = worker_root / "prompts" / prompt_name
     try:

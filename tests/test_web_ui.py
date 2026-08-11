@@ -57,7 +57,18 @@ def test_routing_ui_configures_all_tiers_through_v2_settings() -> None:
 
 
 def test_routing_ui_discovers_models_without_inserting_html() -> None:
-    assert 'id="routingModels"' in INDEX_HTML
-    assert "list.replaceChildren()" in INDEX_HTML
+    assert '<select id="${name}Model"></select>' in INDEX_HTML
+    assert 'id="routingModels"' not in INDEX_HTML
+    assert "select.replaceChildren()" in INDEX_HTML
     assert "const option=document.createElement('option')" in INDEX_HTML
     assert "option.value=name" in INDEX_HTML
+    assert "option.textContent=name" in INDEX_HTML
+    assert "setTierModel(tier,current)" in INDEX_HTML
+
+
+def test_routing_dashboard_renders_status_metrics() -> None:
+    assert 'id="routerMetrics"' in INDEX_HTML
+    assert "'/api/v2/router/status'" in INDEX_HTML
+    assert "renderRouting(routing)" in INDEX_HTML
+    assert "success_rate_by_tier" in INDEX_HTML
+    assert "cloud_tokens_saved" in INDEX_HTML

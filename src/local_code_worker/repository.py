@@ -65,8 +65,15 @@ def _run_git(root: Path, arguments: list[str]) -> str:
 def _run_git_diff(root: Path, arguments: list[str]) -> str:
     """Return Git diff output; status 1 is normal when a diff exists."""
     completed = subprocess.run(
-        ["git", *arguments], cwd=root, shell=False, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=30, check=False,
+        ["git", *arguments],
+        cwd=root,
+        shell=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
     )
     if completed.returncode not in {0, 1}:
         raise RepositoryError(completed.stderr.strip() or f"git {' '.join(arguments)} failed")

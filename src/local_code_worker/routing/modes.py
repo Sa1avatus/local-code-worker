@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from hashlib import sha256
 
 from ..providers.base import ProviderRequest
 from ..virtual_models import ModelTier
@@ -42,6 +43,7 @@ def plan_routing(
     legacy_tier: ModelTier = ModelTier.LOCAL,
     has_previous_failures: bool = False,
     routellm_backend: RouteLlmBackend | None = None,
+    assignment_key: str | None = None,
     clock: Clock = lambda: datetime.now(UTC),
 ) -> RoutingPlan:
     legacy = _legacy_decision(legacy_config, legacy_tier, settings.policy_version, clock)
@@ -56,6 +58,11 @@ def plan_routing(
         routellm_backend=routellm_backend,
         clock=clock,
     )
-    if settings.mode is RoutingMode.OBSERVE_ONLY:
+    if settings.mode in {RoutingMode.OBSERVE_ONLY, RoutingMode.SHADOW}:
         return RoutingPlan(actual=legacy, hypothetical=routed)
+    if settings.mode is RoutingMode.CANARY:
+        key = assignment_key or "unassigned"
+        bucket = int.from_bytes(sha256(key.encode()).digest()[:4], "big") % 100
+        if bucket >= settings.canary_percent:
+            return RoutingPlan(actual=legacy, hypothetical=routed)
     return RoutingPlan(actual=routed)

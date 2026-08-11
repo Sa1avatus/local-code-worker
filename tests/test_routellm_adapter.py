@@ -57,9 +57,9 @@ def settings() -> GatewayRoutingSettings:
 
 @pytest.mark.parametrize(
     ("score", "tier"),
-    [(0.59, ModelTier.LOCAL), (0.6, ModelTier.STRONG)],
+    [(0.2, ModelTier.LOCAL), (0.5, ModelTier.MID), (0.8, ModelTier.STRONG)],
 )
-def test_routellm_maps_ambiguous_request_to_weak_or_strong(
+def test_routellm_maps_score_through_configured_three_tier_policy(
     score: float,
     tier: ModelTier,
 ) -> None:

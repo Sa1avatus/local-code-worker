@@ -98,6 +98,10 @@ POST http://127.0.0.1:8765/v1/chat/completions
 POST http://127.0.0.1:8765/v1/responses
 GET  http://127.0.0.1:8765/api/statistics
 GET  http://127.0.0.1:8765/api/v2/statistics
+GET  http://127.0.0.1:8765/api/v2/router/status
+GET  http://127.0.0.1:8765/api/v2/router/metrics
+GET  http://127.0.0.1:8765/health
+GET  http://127.0.0.1:8765/ready
 ```
 
 `/api/v2/statistics` returns request/token/latency aggregates. Add the optional non-negative query
@@ -108,7 +112,8 @@ legacy `/api/statistics` response remains unchanged.
 The local Responses endpoint supports strict text input, instructions, reasoning settings,
 non-stream function tools, non-stream JSON responses, ordered text SSE, and bounded process-local
 `previous_response_id` state. Set `store: true` to make a response available for continuation.
-Stored context expires after 15 minutes and is never written to telemetry or disk. Streaming
+Stored context expires after the configurable `GATEWAY_RESPONSE_STATE_TTL_SECONDS` (two hours by
+default) and is never written to telemetry or disk. Streaming
 function tools and multimodal input are rejected explicitly.
 
 `GET /v1/models` exposes only the stable aliases `local-code-worker/auto`,
@@ -120,6 +125,42 @@ resolved but does not silently select another provider.
 Containers on `local-code-worker-network` use `http://local-code-worker-web:8765/v1`. Local gateway
 access does not require a key; clients that require one may send the non-secret value
 `local-worker`.
+
+## Routing architecture
+
+```text
+Request
+  -> deterministic capability filter
+  -> sticky RouteLease for previous_response_id chains
+  -> RouteLLM / deterministic policy
+  -> LOCAL / MID / STRONG
+  -> configured provider
+  -> monotonic escalation on a normalized failure
+```
+
+`GATEWAY_ROUTING_MODE=legacy` is the immediate rollback and preserves the original configured
+provider/model. `shadow` records a hypothetical routed decision without changing execution.
+`canary` applies the new policy to a deterministic percentage of root response chains, controlled
+by `GATEWAY_CANARY_PERCENT`. `route_llm` applies capability filtering and the optional RouteLLM
+score using `GATEWAY_LOCAL_THRESHOLD` and `GATEWAY_STRONG_THRESHOLD`. The compatibility names
+`observe_only` and `router` remain accepted.
+
+A stored Responses chain owns one process-local RouteLease. The lease pins its current tier/model,
+allows only LOCAL -> MID -> STRONG movement, and stops after
+`GATEWAY_MAX_ESCALATIONS_PER_LEASE`. Prompts and response bodies are not written to routing logs or
+SQLite telemetry.
+
+Run the representative routing benchmark against a loopback Worker:
+
+```powershell
+.\.venv\Scripts\python.exe -m local_code_worker.benchmarks `
+  --cases benchmarks\cases.json `
+  --output .local-worker\benchmarks\run.jsonl
+```
+
+The JSONL output contains selected route/model, RouteLLM score, token counts, latency, escalation
+count, success, and expected-route validation. It caps model output at 128 tokens and does not copy
+benchmark prompts into results.
 
 ## Documentation
 

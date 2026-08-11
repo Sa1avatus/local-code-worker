@@ -123,6 +123,13 @@ def api_server(monkeypatch: pytest.MonkeyPatch, tmp_path):
     FakeProvider.streamed_models.clear()
     monkeypatch.setattr(web_app, "record_model_call", lambda *args, **kwargs: None)
     monkeypatch.setattr(web_app, "record_routing_plan", lambda *args, **kwargs: None)
+    monkeypatch.setattr(web_app, "record_route_lease", lambda *args, **kwargs: None)
+    monkeypatch.setattr(web_app, "record_escalation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        web_app,
+        "summarize_routing",
+        lambda: {"router_decisions_total": 2, "escalations_total": 1},
+    )
     monkeypatch.setattr(web_app, "summarize_model_calls", lambda: {"models": []})
     monkeypatch.setattr(
         web_app,
@@ -180,6 +187,19 @@ def test_admin_models_endpoint_keeps_physical_discovery(api_server: int) -> None
 
     assert status == 200
     assert json.loads(content) == {"models": ["qwen:test", "qwen:other"]}
+
+
+def test_router_status_and_process_health_endpoints(api_server: int) -> None:
+    health_status, _, health_content = request(api_server, "GET", "/health")
+    ready_status, _, ready_content = request(api_server, "GET", "/ready")
+    router_status, _, router_content = request(api_server, "GET", "/api/v2/router/status")
+
+    assert health_status == 200
+    assert json.loads(health_content) == {"status": "ok"}
+    assert ready_status == 200
+    assert json.loads(ready_content)["router_mode"] == "legacy"
+    assert router_status == 200
+    assert json.loads(router_content)["metrics"]["escalations_total"] == 1
 
 
 def test_gateway_settings_endpoint_has_editable_defaults(api_server: int) -> None:
@@ -482,6 +502,61 @@ def test_responses_endpoint_continues_stored_response(api_server: int) -> None:
         {"role": "assistant", "content": "ok"},
         {"role": "user", "content": "second"},
     ]
+
+
+def test_response_chain_route_lease_prevents_downgrade(api_server: int) -> None:
+    tiers = {
+        name: {
+            "enabled": True,
+            "provider": "ollama",
+            "base_url": "http://localhost:11434",
+            "model": name,
+            "context_length": 32768,
+            "api_key_action": "keep",
+        }
+        for name in ("local", "mid", "strong")
+    }
+    status, _, _ = request(
+        api_server,
+        "PUT",
+        "/api/v2/settings",
+        {
+            "mode": "router",
+            "tiers": tiers,
+            "routellm_enabled": False,
+            "routellm_threshold": 0.5,
+        },
+    )
+    assert status == 200
+    first_status, _, first_content = request(
+        api_server,
+        "POST",
+        "/v1/responses",
+        {"model": "local-code-worker/strong", "input": "first", "store": True},
+    )
+    first_id = json.loads(first_content)["id"]
+
+    second_status, _, second_content = request(
+        api_server,
+        "POST",
+        "/v1/responses",
+        {
+            "model": "local-code-worker/auto",
+            "input": "small edit",
+            "previous_response_id": first_id,
+            "store": True,
+        },
+    )
+    second_id = json.loads(second_content)["id"]
+    first_lease = web_app.RESPONSE_STATE.get_stored(first_id).route_lease
+    second_lease = web_app.RESPONSE_STATE.get_stored(second_id).route_lease
+
+    assert first_status == 200
+    assert second_status == 200
+    assert FakeProvider.attempted_models == ["strong", "strong"]
+    assert first_lease is not None
+    assert second_lease is not None
+    assert second_lease.lease_id == first_lease.lease_id
 
 
 def test_responses_endpoint_rejects_unknown_previous_response(api_server: int) -> None:

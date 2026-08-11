@@ -2,7 +2,14 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 from local_code_worker.models import ProviderName
-from local_code_worker.routing.models import RoutingDecision, RoutingMethod, RoutingPlan
+from local_code_worker.routing.models import (
+    EscalationEvent,
+    EscalationReason,
+    RouteLease,
+    RoutingDecision,
+    RoutingMethod,
+    RoutingPlan,
+)
 from local_code_worker.telemetry.database import SCHEMA_VERSION, TelemetryDatabase
 from local_code_worker.telemetry.models import (
     ModelRequestTelemetry,
@@ -53,7 +60,7 @@ def test_initialize_is_idempotent(tmp_path) -> None:
     with database.connect() as connection:
         versions = connection.execute("SELECT version FROM schema_migrations").fetchall()
 
-    assert versions == [(1,), (SCHEMA_VERSION,)]
+    assert versions == [(1,), (2,), (SCHEMA_VERSION,)]
 
 
 def test_initialize_upgrades_existing_version_one_database(tmp_path) -> None:
@@ -76,7 +83,7 @@ def test_initialize_upgrades_existing_version_one_database(tmp_path) -> None:
         }
         versions = connection.execute("SELECT version FROM schema_migrations").fetchall()
     assert "routing_decisions" in tables
-    assert versions == [(1,), (2,)]
+    assert versions == [(1,), (2,), (3,)]
 
 
 def test_record_routing_plan_keeps_actual_and_hypothetical_separate(tmp_path) -> None:
@@ -104,6 +111,40 @@ def test_record_routing_plan_keeps_actual_and_hypothetical_separate(tmp_path) ->
 
     assert database.get_routing_plan("request-1") == plan
     assert database.get_routing_plan("missing") is None
+
+
+def test_route_lease_and_escalation_metrics_are_persisted(tmp_path) -> None:
+    database = TelemetryDatabase(tmp_path / "telemetry.db")
+    database.initialize()
+    lease = RouteLease(
+        lease_id="lease-1",
+        root_response_id="resp-1",
+        current_route=ModelTier.MID,
+        current_model="mid-model",
+        created_at="2026-08-11T00:00:00+00:00",
+        updated_at="2026-08-11T00:00:01+00:00",
+        escalation_count=1,
+        escalation_reason=EscalationReason.PROVIDER_ERROR,
+    )
+    event = EscalationEvent(
+        from_route=ModelTier.LOCAL,
+        to_route=ModelTier.MID,
+        from_model="local-model",
+        to_model="mid-model",
+        reason=EscalationReason.PROVIDER_ERROR,
+        request_id="req-1",
+        response_id="resp-1",
+        lease_id="lease-1",
+        timestamp="2026-08-11T00:00:01+00:00",
+    )
+
+    database.record_route_lease(lease)
+    database.record_escalation(event)
+
+    metrics = database.summarize_routing()
+    assert metrics["route_lease_created"] == 1
+    assert metrics["escalations_total"] == 1
+    assert metrics["escalations_by_reason"] == {"provider_error": 1}
 
 
 def test_routing_schema_excludes_request_payloads_and_credentials(tmp_path) -> None:

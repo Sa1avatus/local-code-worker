@@ -30,6 +30,26 @@ class ProviderConfigurationError(WorkerError):
     """Provider configuration is missing or invalid."""
 
 
+class ProviderTimeout(ProviderError):
+    """A provider exceeded its configured timeout."""
+
+
+class ProviderUnavailable(ProviderError):
+    """A configured provider or model is unavailable."""
+
+
+class ContextOverflowError(ProviderError):
+    """The request exceeds the selected model context window."""
+
+
+class CapabilityError(ProviderError):
+    """No configured model satisfies hard request capabilities."""
+
+
+class InvalidModelOutput(ProviderError):
+    """A provider returned output that violates the requested contract."""
+
+
 class ResponseError(WorkerError):
     """The model response is malformed."""
 

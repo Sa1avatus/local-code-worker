@@ -5,6 +5,8 @@ from local_code_worker.responses.state import (
     PreviousResponseNotFound,
     ResponseStateStore,
 )
+from local_code_worker.routing.models import RouteLease
+from local_code_worker.virtual_models import ModelTier
 
 
 def test_response_state_expires_entries() -> None:
@@ -31,3 +33,19 @@ def test_response_state_evicts_least_recently_used_entry() -> None:
         store.get("resp_2")
     assert store.get("resp_1")[0].content == "hello"
     assert store.get("resp_3")[0].content == "hello"
+
+
+def test_response_state_keeps_route_lease_with_chain() -> None:
+    store = ResponseStateStore()
+    lease = RouteLease(
+        lease_id="lease-1",
+        root_response_id="resp-1",
+        current_route=ModelTier.LOCAL,
+        current_model="local-model",
+        created_at="2026-08-11T00:00:00+00:00",
+        updated_at="2026-08-11T00:00:00+00:00",
+    )
+
+    store.put("resp-1", [ProviderMessage(role="user", content="hello")], lease)
+
+    assert store.get_stored("resp-1").route_lease == lease

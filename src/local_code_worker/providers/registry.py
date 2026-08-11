@@ -57,6 +57,12 @@ class ProviderRegistry:
             is_local=registration.is_local,
         )
 
+    def capabilities(self, provider: ProviderName) -> ProviderCapabilities:
+        registration = self._registrations.get(provider)
+        if registration is None:
+            raise ProviderConfigurationError(f"Unknown LLM provider: {provider}")
+        return registration.capabilities
+
 
 def create_default_registry() -> ProviderRegistry:
     from .ollama import OllamaProvider

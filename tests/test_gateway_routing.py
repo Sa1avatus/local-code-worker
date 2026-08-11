@@ -195,10 +195,10 @@ def test_runtime_failure_advances_from_local_to_mid_then_strong() -> None:
         },
     )
 
-    mid = resolve_gateway_fallback(worker_settings(), routing, ModelTier.LOCAL)
+    mid = resolve_gateway_fallback(worker_settings(), routing, request(), ModelTier.LOCAL)
     assert mid is not None
     mid_settings, mid_plan = mid
-    strong = resolve_gateway_fallback(worker_settings(), routing, ModelTier.MID)
+    strong = resolve_gateway_fallback(worker_settings(), routing, request(), ModelTier.MID)
     assert strong is not None
     strong_settings, strong_plan = strong
 
@@ -206,4 +206,4 @@ def test_runtime_failure_advances_from_local_to_mid_then_strong() -> None:
     assert mid_plan.actual.method is RoutingMethod.FALLBACK
     assert strong_settings.llm_model == "strong"
     assert strong_plan.actual.provider is ProviderName.OPENAI_COMPATIBLE
-    assert resolve_gateway_fallback(worker_settings(), routing, ModelTier.STRONG) is None
+    assert resolve_gateway_fallback(worker_settings(), routing, request(), ModelTier.STRONG) is None

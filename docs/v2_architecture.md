@@ -679,3 +679,21 @@ PHASE 5 реализована без преждевременного вклю�
 - admin `/api/models` сохраняет physical provider discovery;
 - Chat Completions и Responses отклоняют неизвестные aliases и возвращают public alias;
 - до PHASE 6 все aliases фактически используют active legacy provider/model.
+# Production routing lifecycle
+
+The Responses gateway analyzes hard request capabilities before scoring route quality. Unsupported
+tiers are excluded before provider invocation. New stored chains create a bounded in-memory
+`RouteLease` inside the existing response state; continuations reuse it through
+`previous_response_id`. Automatic movement is monotonic (`LOCAL -> MID -> STRONG`) and each change
+records a normalized escalation event in SQLite.
+
+Modes are selected with `GATEWAY_ROUTING_MODE`: `legacy`, `shadow`, `canary`, or `route_llm`.
+Compatibility values `observe_only` and `router` remain supported. Shadow always executes legacy.
+Canary assignment hashes the root response ID, so every continuation in a lease receives the same
+assignment. Legacy is the rollback path and does not require source changes.
+
+The admin surface exposes `/api/v2/router/status`, `/api/v2/router/metrics`, and a response-scoped
+decision lookup. `/health` is a liveness check; `/ready` validates and reports the loaded routing
+configuration without loading a model. Structured logs and telemetry contain identifiers,
+routes/models, scores, latency/token metadata, and escalation reasons, but never prompts, source,
+tool payloads, response bodies, paths, or credentials.

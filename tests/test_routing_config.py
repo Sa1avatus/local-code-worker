@@ -36,6 +36,10 @@ def test_routing_config_loads_tiers_and_routellm_controls(tmp_path) -> None:
                 "GATEWAY_ROUTELLM_THRESHOLD=0.7",
                 "GATEWAY_ROUTELLM_CHECKPOINT_PATH=custom-mf-checkpoint",
                 "GATEWAY_POLICY_VERSION=policy-2",
+                "GATEWAY_LOCAL_THRESHOLD=0.2",
+                "GATEWAY_STRONG_THRESHOLD=0.8",
+                "GATEWAY_CANARY_PERCENT=25",
+                "GATEWAY_MAX_ESCALATIONS_PER_LEASE=3",
             ]
         ),
     )
@@ -50,6 +54,16 @@ def test_routing_config_loads_tiers_and_routellm_controls(tmp_path) -> None:
     assert settings.routellm_threshold == 0.7
     assert settings.routellm_checkpoint_path == "custom-mf-checkpoint"
     assert settings.policy_version == "policy-2"
+    assert settings.local_threshold == 0.2
+    assert settings.strong_threshold == 0.8
+    assert settings.canary_percent == 25
+    assert settings.max_escalations_per_lease == 3
+
+
+def test_router_mode_alias_is_supported(tmp_path) -> None:
+    settings = load_gateway_routing_settings(write_env(tmp_path / ".env", "ROUTER_MODE=shadow\n"))
+
+    assert settings.mode is RoutingMode.SHADOW
 
 
 def test_routing_config_rejects_partial_tier(tmp_path) -> None:

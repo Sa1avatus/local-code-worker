@@ -30,15 +30,11 @@ def read_system_metrics() -> dict[str, object]:
                     "temperature_celsius": pynvml.nvmlDeviceGetTemperature(
                         handle, pynvml.NVML_TEMPERATURE_GPU
                     ),
-                    "power_watts": round(
-                        pynvml.nvmlDeviceGetPowerUsage(handle) / 1_000, 1
-                    ),
+                    "power_watts": round(pynvml.nvmlDeviceGetPowerUsage(handle) / 1_000, 1),
                     "power_limit_watts": round(
                         pynvml.nvmlDeviceGetEnforcedPowerLimit(handle) / 1_000, 1
                     ),
-                    "clock_mhz": pynvml.nvmlDeviceGetClockInfo(
-                        handle, pynvml.NVML_CLOCK_GRAPHICS
-                    ),
+                    "clock_mhz": pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_GRAPHICS),
                 }
             )
     except Exception:

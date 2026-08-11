@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .models import GenerationMetadata, ResponseAttempt, ResponseStatus
-from .routing.models import RoutingPlan
+from .routing.models import EscalationEvent, RouteLease, RoutingPlan
 from .telemetry.database import TelemetryDatabase
 from .telemetry.models import ModelRequestTelemetry, TokenUsage, UsageProvenance
 
@@ -40,6 +40,10 @@ def record_model_call(
     kind: str,
     outcome: str,
     path: Path | None = None,
+    request_id: str | None = None,
+    tier: str | None = None,
+    escalation_count: int = 0,
+    tool_count: int = 0,
 ) -> None:
     if metadata is None:
         return
@@ -58,7 +62,14 @@ def record_model_call(
         events.append(event)
         _write_events(target, events[-_MAX_EVENTS:])
     if path is None:
-        _record_generation_telemetry(metadata, outcome)
+        _record_generation_telemetry(
+            metadata,
+            outcome,
+            request_id=request_id,
+            tier=tier,
+            escalation_count=escalation_count,
+            tool_count=tool_count,
+        )
 
 
 def summarize_model_calls(path: Path | None = None) -> dict[str, object]:
@@ -134,6 +145,36 @@ def record_routing_plan(request_id: str, plan: RoutingPlan) -> None:
         return
 
 
+def record_route_lease(lease: RouteLease) -> None:
+    try:
+        database = TelemetryDatabase(telemetry_database_path())
+        database.initialize()
+        database.record_route_lease(lease)
+    except (OSError, sqlite3.Error):
+        return
+
+
+def record_escalation(event: EscalationEvent) -> None:
+    try:
+        database = TelemetryDatabase(telemetry_database_path())
+        database.initialize()
+        database.record_escalation(event)
+    except (OSError, sqlite3.Error):
+        return
+
+
+def summarize_routing() -> dict[str, object]:
+    database = TelemetryDatabase(telemetry_database_path())
+    database.initialize()
+    return database.summarize_routing()
+
+
+def get_routing_plan(request_id: str) -> RoutingPlan | None:
+    database = TelemetryDatabase(telemetry_database_path())
+    database.initialize()
+    return database.get_routing_plan(request_id)
+
+
 def record_worker_attempt(attempt: ResponseAttempt, path: Path | None = None) -> None:
     if attempt.provider is None or attempt.model is None:
         return
@@ -177,15 +218,23 @@ def _write_events(path: Path, events: list[dict[str, object]]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _record_generation_telemetry(metadata: GenerationMetadata, outcome: str) -> None:
+def _record_generation_telemetry(
+    metadata: GenerationMetadata,
+    outcome: str,
+    *,
+    request_id: str | None = None,
+    tier: str | None = None,
+    escalation_count: int = 0,
+    tool_count: int = 0,
+) -> None:
     usage = metadata.usage
     has_provider_usage = "prompt_tokens" in usage or "completion_tokens" in usage
     telemetry = ModelRequestTelemetry(
-        request_id=uuid4().hex,
+        request_id=request_id or uuid4().hex,
         timestamp=metadata.completed_at,
         provider=metadata.provider.value,
         model=metadata.model,
-        tier="local" if metadata.provider.value == "ollama" else "cloud",
+        tier=tier or ("local" if metadata.provider.value == "ollama" else "cloud"),
         usage=TokenUsage(
             input_tokens=int(usage.get("prompt_tokens", 0)),
             output_tokens=int(usage.get("completion_tokens", 0)),
@@ -196,6 +245,8 @@ def _record_generation_telemetry(metadata: GenerationMetadata, outcome: str) -> 
             ),
         ),
         latency_ms=metadata.duration_seconds * 1000,
+        escalation_count=escalation_count,
+        tool_count=tool_count,
         success=outcome == "completed",
         failure_type=None if outcome == "completed" else outcome,
     )

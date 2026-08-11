@@ -1,0 +1,23 @@
+[
+  {
+    "id": "simple-edit-1",
+    "category": "simple_edit",
+    "prompt": "Rename one local variable in a small function without changing behavior.",
+    "expected_tier": "local",
+    "expected_behavior": "A bounded edit remains local."
+  },
+  {
+    "id": "multi-file-refactor-1",
+    "category": "multi_file_refactoring",
+    "prompt": "Refactor a parser and its tests across three Python files while preserving its API.",
+    "expected_tier": "mid",
+    "expected_behavior": "A multi-file refactor uses the mid tier."
+  },
+  {
+    "id": "architecture-1",
+    "category": "architecture_change",
+    "prompt": "Design a security-sensitive migration spanning API, worker, and database services.",
+    "expected_tier": "strong",
+    "expected_behavior": "A cross-service security architecture task reaches the strongest eligible tier."
+  }
+]

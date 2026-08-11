@@ -53,7 +53,9 @@ def load_gateway_routing_settings(
             )
 
     return GatewayRoutingSettings(
-        mode=RoutingMode(value("GATEWAY_ROUTING_MODE") or RoutingMode.LEGACY.value),
+        mode=RoutingMode(
+            value("GATEWAY_ROUTING_MODE") or value("ROUTER_MODE") or RoutingMode.LEGACY.value
+        ),
         tiers=tiers,
         policy_version=value("GATEWAY_POLICY_VERSION") or "1",
         routellm_enabled=_parse_bool(value("GATEWAY_ROUTELLM_ENABLED"), default=False),
@@ -62,6 +64,10 @@ def load_gateway_routing_settings(
             value("GATEWAY_ROUTELLM_AMBIGUITY_CONFIDENCE") or "0.65"
         ),
         routellm_checkpoint_path=value("GATEWAY_ROUTELLM_CHECKPOINT_PATH"),
+        local_threshold=float(value("GATEWAY_LOCAL_THRESHOLD") or "0.3"),
+        strong_threshold=float(value("GATEWAY_STRONG_THRESHOLD") or "0.7"),
+        canary_percent=int(value("GATEWAY_CANARY_PERCENT") or "10"),
+        max_escalations_per_lease=int(value("GATEWAY_MAX_ESCALATIONS_PER_LEASE") or "2"),
     )
 
 
@@ -94,6 +100,10 @@ def public_gateway_settings(env_path: Path = Path(".env")) -> dict[str, object]:
         "tiers": tiers,
         "routellm_enabled": settings.routellm_enabled,
         "routellm_threshold": settings.routellm_threshold,
+        "local_threshold": settings.local_threshold,
+        "strong_threshold": settings.strong_threshold,
+        "canary_percent": settings.canary_percent,
+        "max_escalations_per_lease": settings.max_escalations_per_lease,
     }
 
 
@@ -107,6 +117,14 @@ def save_gateway_settings(
     set_key(path, "GATEWAY_ROUTING_MODE", value.mode.value)
     set_key(path, "GATEWAY_ROUTELLM_ENABLED", str(value.routellm_enabled).lower())
     set_key(path, "GATEWAY_ROUTELLM_THRESHOLD", str(value.routellm_threshold))
+    set_key(path, "GATEWAY_LOCAL_THRESHOLD", str(value.local_threshold))
+    set_key(path, "GATEWAY_STRONG_THRESHOLD", str(value.strong_threshold))
+    set_key(path, "GATEWAY_CANARY_PERCENT", str(value.canary_percent))
+    set_key(
+        path,
+        "GATEWAY_MAX_ESCALATIONS_PER_LEASE",
+        str(value.max_escalations_per_lease),
+    )
     for tier, config in value.tiers.items():
         prefix = f"GATEWAY_{tier.value.upper()}"
         key_name = TIER_API_KEY_ENV[tier]
