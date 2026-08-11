@@ -259,11 +259,6 @@ class OpenAICompatibleProvider:
     def stream(self, request: ProviderRequest) -> Iterator[ProviderEvent]:
         if not request.stream:
             raise ValueError("OpenAI-compatible stream request must enable streaming")
-        if request.tools:
-            raise ProviderError(
-                "OpenAI-compatible streaming function tools are not supported yet",
-                category="unsupported_tools",
-            )
         messages = [message.model_dump() for message in request.messages]
         request_body = self._request_body(
             messages,
@@ -309,6 +304,12 @@ class OpenAICompatibleProvider:
                             choices = chunk.get("choices", [])
                             choice = choices[0] if choices else {}
                             delta = choice.get("delta", {})
+                            if delta.get("tool_calls"):
+                                raise ProviderError(
+                                    "Provider returned a function call during streaming; "
+                                    "streamed function-call output is not supported yet",
+                                    category="unsupported_streamed_tool_call",
+                                )
                             text = delta.get("content") or delta.get("refusal") or ""
                         except (ValueError, TypeError, AttributeError) as error:
                             raise ProviderError(

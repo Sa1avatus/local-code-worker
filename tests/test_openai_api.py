@@ -167,6 +167,18 @@ def request(port: int, method: str, path: str, payload=None):
     return response.status, content_type, content
 
 
+def declared_request(port: int, path: str, content_length: int):
+    connection = HTTPConnection("127.0.0.1", port)
+    connection.putrequest("POST", path)
+    connection.putheader("Content-Type", "application/json")
+    connection.putheader("Content-Length", str(content_length))
+    connection.endheaders()
+    response = connection.getresponse()
+    content = response.read().decode()
+    connection.close()
+    return response.status, json.loads(content)
+
+
 def test_openai_models_endpoint(api_server: int) -> None:
     status, _, content = request(api_server, "GET", "/v1/models")
     payload = json.loads(content)
@@ -180,6 +192,80 @@ def test_openai_models_endpoint(api_server: int) -> None:
         "local-code-worker/strong",
     ]
     assert {model["owned_by"] for model in payload["data"]} == {"local-code-worker"}
+
+
+@pytest.mark.parametrize("size", [64 * 1024, 256 * 1024, 1024 * 1024, 5 * 1024 * 1024])
+def test_responses_accepts_large_request_bodies(api_server: int, size: int) -> None:
+    status, _, content = request(
+        api_server,
+        "POST",
+        "/v1/responses",
+        {"model": "local-code-worker/local", "input": "x" * size},
+    )
+
+    assert status == 200, content
+
+
+def test_responses_rejects_body_above_limit_with_openai_error(api_server: int) -> None:
+    status, payload = declared_request(api_server, "/v1/responses", 16 * 1024 * 1024 + 1)
+
+    assert status == 413
+    assert payload["error"]["code"] == "request_too_large"
+    assert payload["error"]["details"] == {
+        "max_bytes": 16 * 1024 * 1024,
+        "received_bytes": 16 * 1024 * 1024 + 1,
+    }
+
+
+def test_ui_request_rejects_body_above_ui_limit(api_server: int) -> None:
+    status, payload = declared_request(api_server, "/api/ollama/pull", 1024 * 1024 + 1)
+
+    assert status == 413
+    assert payload["error"]["code"] == "request_too_large"
+    assert payload["error"]["details"]["max_bytes"] == 1024 * 1024
+
+
+def test_responses_logging_contains_only_safe_request_metadata(
+    api_server: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = "private-prompt-marker"
+    messages = []
+    monkeypatch.setattr(web_app.HTTP_LOGGER, "info", messages.append)
+    status, _, _ = request(
+        api_server,
+        "POST",
+        "/v1/responses",
+        {"model": "local-code-worker/local", "input": marker},
+    )
+
+    assert status == 200
+    records = [json.loads(message) for message in messages]
+    summary = records[-1]
+    assert summary["method"] == "POST"
+    assert summary["path"] == "/v1/responses"
+    assert summary["content_length"] > 0
+    assert summary["max_request_bytes"] == 16 * 1024 * 1024
+    assert summary["status"] == 200
+    assert summary["elapsed_ms"] >= 0
+    assert marker not in "".join(messages)
+
+
+def test_large_request_rejection_is_logged_without_body(
+    api_server: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    messages = []
+    monkeypatch.setattr(web_app.HTTP_LOGGER, "info", messages.append)
+    status, _ = declared_request(api_server, "/v1/responses", 16 * 1024 * 1024 + 1)
+
+    assert status == 413
+    records = [json.loads(message) for message in messages]
+    rejection = next(record for record in records if record.get("event"))
+    assert rejection == {
+        "event": "request rejected: body too large",
+        "request_id": rejection["request_id"],
+        "received_bytes": 16 * 1024 * 1024 + 1,
+        "max_bytes": 16 * 1024 * 1024,
+    }
 
 
 def test_admin_models_endpoint_keeps_physical_discovery(api_server: int) -> None:
@@ -458,8 +544,8 @@ def test_responses_endpoint_returns_non_stream_function_call(api_server: int) ->
     ]
 
 
-def test_responses_endpoint_rejects_streaming_function_tools(api_server: int) -> None:
-    status, _, content = request(
+def test_responses_accepts_tool_declarations_during_text_streaming(api_server: int) -> None:
+    status, content_type, content = request(
         api_server,
         "POST",
         "/v1/responses",
@@ -471,8 +557,43 @@ def test_responses_endpoint_rejects_streaming_function_tools(api_server: int) ->
         },
     )
 
-    assert status == 400
-    assert "streaming function tools" in json.loads(content)["error"]["message"]
+    assert status == 200
+    assert content_type == "text/event-stream; charset=utf-8"
+    assert "event: response.completed" in content
+
+
+def test_codex_like_request_above_old_64_kib_limit_streams(api_server: int) -> None:
+    large_schema = {
+        "type": "object",
+        "properties": {
+            f"field_{index}": {"type": "string", "description": "x" * 128} for index in range(600)
+        },
+    }
+    payload = {
+        "model": "local-code-worker/auto",
+        "instructions": "Act as a coding agent.",
+        "input": [{"type": "message", "role": "user", "content": "Return test"}],
+        "tools": [
+            {
+                "type": "function",
+                "name": "shell_command",
+                "description": "Run an approved command",
+                "parameters": large_schema,
+                "strict": True,
+            }
+        ],
+        "reasoning": {"effort": "high", "summary": "auto"},
+        "stream": True,
+    }
+    assert len(json.dumps(payload).encode()) > 64 * 1024
+
+    status, content_type, content = request(api_server, "POST", "/v1/responses", payload)
+
+    assert status == 200
+    assert content_type == "text/event-stream; charset=utf-8"
+    assert "event: response.created" in content
+    assert "event: response.completed" in content
+    assert FakeProvider.streamed_models[-1] == "qwen:test"
 
 
 def test_responses_endpoint_continues_stored_response(api_server: int) -> None:

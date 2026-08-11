@@ -1,6 +1,7 @@
 # ruff: noqa: E501
 
 import json
+import logging
 import time
 import uuid
 from http import HTTPStatus
@@ -21,6 +22,7 @@ from .providers import create_provider
 from .providers.adapter import CanonicalProviderAdapter
 from .providers.base import ProviderMessage
 from .providers.ollama import OllamaProvider
+from .request_limits import RequestLimits, load_request_limits
 from .responses.adapter import adapt_response_request
 from .responses.builder import build_response
 from .responses.schemas import (
@@ -60,8 +62,14 @@ from .web_models import GatewaySettingsInput, ProviderSettingsInput, validate_mo
 
 INFERENCE_QUEUE = InferenceQueue()
 
-MAX_REQUEST_BYTES = 64 * 1024
 RESPONSE_STATE = ResponseStateStore()
+REQUEST_LIMITS = RequestLimits()
+HTTP_LOGGER = logging.getLogger("local_code_worker.http")
+if not HTTP_LOGGER.handlers:
+    _http_handler = logging.StreamHandler()
+    _http_handler.setFormatter(logging.Formatter("%(message)s"))
+    HTTP_LOGGER.addHandler(_http_handler)
+HTTP_LOGGER.setLevel(logging.INFO)
 LOCAL_HOSTS = {
     "localhost",
     "127.0.0.1",
@@ -69,6 +77,14 @@ LOCAL_HOSTS = {
     "host.docker.internal",
     "local-code-worker-web",
 }
+
+
+class RequestBodyTooLarge(ValueError):
+    def __init__(self, *, max_bytes: int, received_bytes: int) -> None:
+        super().__init__("Request body exceeds maximum allowed size")
+        self.max_bytes = max_bytes
+        self.received_bytes = received_bytes
+
 
 INDEX_HTML = r"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -141,14 +157,41 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_json(self) -> dict[str, Any]:
+    def _send_request_too_large(self, error: RequestBodyTooLarge) -> None:
+        self._send_json(
+            HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            {
+                "error": {
+                    "message": str(error),
+                    "type": "invalid_request_error",
+                    "code": "request_too_large",
+                    "details": {
+                        "max_bytes": error.max_bytes,
+                        "received_bytes": error.received_bytes,
+                    },
+                }
+            },
+        )
+
+    def _read_json(self, *, max_bytes: int) -> dict[str, Any]:
+        transfer_encoding = self.headers.get("Transfer-Encoding")
+        if transfer_encoding and transfer_encoding.lower().strip() != "identity":
+            raise ValueError("Chunked request bodies are not supported")
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            raise ValueError("Content-Length header is required")
         try:
-            length = int(self.headers.get("Content-Length", "0"))
+            length = int(raw_length)
         except ValueError as error:
             raise ValueError("Invalid Content-Length") from error
-        if length <= 0 or length > MAX_REQUEST_BYTES:
-            raise ValueError("Request body size is invalid")
-        payload = json.loads(self.rfile.read(length))
+        if length < 0:
+            raise ValueError("Invalid Content-Length")
+        if length > max_bytes:
+            raise RequestBodyTooLarge(max_bytes=max_bytes, received_bytes=length)
+        body = self.rfile.read(length)
+        if len(body) != length:
+            raise ValueError("Request body ended before Content-Length bytes were received")
+        payload = json.loads(body)
         if not isinstance(payload, dict):
             raise ValueError("JSON body must be an object")
         return payload
@@ -182,7 +225,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         )
 
     def _chat_request(self) -> tuple[WorkerSettings, list[dict[str, str]], bool, str]:
-        payload = self._read_json()
+        payload = self._read_json(max_bytes=REQUEST_LIMITS.max_ui_request_bytes)
         raw_messages = payload.get("messages")
         if not isinstance(raw_messages, list) or not raw_messages:
             raise ValueError("messages must be a non-empty array")
@@ -306,11 +349,11 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             },
         )
 
-    def _response(self, lease: InferenceLease) -> None:
-        request = ResponseCreateRequest.model_validate(self._read_json())
+    def _response(self, lease: InferenceLease, request_id: str) -> None:
+        request = ResponseCreateRequest.model_validate(
+            self._read_json(max_bytes=REQUEST_LIMITS.max_responses_request_bytes)
+        )
         virtual_model = VIRTUAL_MODEL_REGISTRY.resolve(request.model)
-        if request.tools and request.stream:
-            raise ValueError("streaming function tools are not supported yet")
         settings = self._settings().model_copy(update={"llm_stream": request.stream})
         provider_request = adapt_response_request(
             request,
@@ -326,7 +369,6 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 update={"messages": previous_messages + provider_request.messages}
             )
         response_id = f"resp_{uuid.uuid4().hex}"
-        request_id = f"req_{uuid.uuid4().hex}"
         routing_settings = load_gateway_routing_settings(self.env_path)
         routellm_backend = (
             ROUTELLM_BACKENDS.get(routing_settings.routellm_checkpoint_path)
@@ -668,6 +710,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 self._openai_models()
                 return
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+        except RequestBodyTooLarge as error:
+            self._send_request_too_large(error)
         except (ProviderError, WorkerError, ValidationError, ValueError, OSError) as error:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
 
@@ -680,13 +724,17 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             return
         try:
             if self.path == "/api/v2/settings":
-                value = GatewaySettingsInput.model_validate(self._read_json())
+                value = GatewaySettingsInput.model_validate(
+                    self._read_json(max_bytes=REQUEST_LIMITS.max_ui_request_bytes)
+                )
                 self._send_json(
                     HTTPStatus.OK,
                     save_gateway_settings(value, self.env_path),
                 )
                 return
-            value = ProviderSettingsInput.model_validate(self._read_json())
+            value = ProviderSettingsInput.model_validate(
+                self._read_json(max_bytes=REQUEST_LIMITS.max_ui_request_bytes)
+            )
             result = save_provider_settings(value, self.env_path)
             health = create_provider(load_web_worker_settings(self.env_path)).check_connection()
             result["details"] = health.details
@@ -703,6 +751,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             try:
                 with INFERENCE_QUEUE.acquire() as lease:
                     self._chat_completion(lease)
+            except RequestBodyTooLarge as error:
+                self._send_request_too_large(error)
             except (ProviderError, WorkerError, ValidationError, ValueError, OSError) as error:
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
@@ -710,13 +760,49 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 )
             return
         if self.path == "/v1/responses":
+            request_id = f"req_{uuid.uuid4().hex}"
+            started = time.monotonic()
+            raw_length = self.headers.get("Content-Length")
+            content_length = int(raw_length) if raw_length and raw_length.isdigit() else None
+            status = HTTPStatus.INTERNAL_SERVER_ERROR
             try:
                 with INFERENCE_QUEUE.acquire() as lease:
-                    self._response(lease)
+                    self._response(lease, request_id)
+                status = HTTPStatus.OK
+            except RequestBodyTooLarge as error:
+                status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+                self._send_request_too_large(error)
+                HTTP_LOGGER.info(
+                    json.dumps(
+                        {
+                            "event": "request rejected: body too large",
+                            "request_id": request_id,
+                            "received_bytes": error.received_bytes,
+                            "max_bytes": error.max_bytes,
+                        },
+                        separators=(",", ":"),
+                    )
+                )
             except (ProviderError, WorkerError, ValidationError, ValueError, OSError) as error:
+                status = HTTPStatus.BAD_REQUEST
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
                     {"error": {"message": str(error), "type": "invalid_request_error"}},
+                )
+            finally:
+                HTTP_LOGGER.info(
+                    json.dumps(
+                        {
+                            "request_id": request_id,
+                            "method": "POST",
+                            "path": "/v1/responses",
+                            "content_length": content_length,
+                            "max_request_bytes": REQUEST_LIMITS.max_responses_request_bytes,
+                            "status": int(status),
+                            "elapsed_ms": round((time.monotonic() - started) * 1000, 2),
+                        },
+                        separators=(",", ":"),
+                    )
                 )
             return
         if self.path != "/api/ollama/pull":
@@ -724,7 +810,13 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             return
         try:
             with INFERENCE_QUEUE.acquire():
-                model = validate_model_name(str(self._read_json().get("model", "")))
+                model = validate_model_name(
+                    str(
+                        self._read_json(max_bytes=REQUEST_LIMITS.max_ui_request_bytes).get(
+                            "model", ""
+                        )
+                    )
+                )
                 settings = self._settings()
                 if settings.llm_provider is not ProviderName.OLLAMA:
                     raise ValueError("Select the Ollama provider before installing a local model")
@@ -741,6 +833,9 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 for chunk in chain((first_chunk,), chunks):
                     self.wfile.write(json.dumps(chunk, ensure_ascii=False).encode("utf-8") + b"\n")
                     self.wfile.flush()
+        except RequestBodyTooLarge as error:
+            if not response_started:
+                self._send_request_too_large(error)
         except StopIteration:
             if not response_started:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Ollama returned no progress"})
@@ -750,8 +845,9 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
 
 
 def run_web_server(host: str = "127.0.0.1", port: int = 8765, env_path: Path = Path(".env")) -> int:
-    global RESPONSE_STATE
+    global REQUEST_LIMITS, RESPONSE_STATE
     initialize_container_settings(env_path)
+    REQUEST_LIMITS = load_request_limits(env_path)
     state_values = dotenv_values(env_path)
     RESPONSE_STATE = ResponseStateStore(
         max_entries=int(str(state_values.get("GATEWAY_RESPONSE_STATE_MAX_ENTRIES") or 256)),

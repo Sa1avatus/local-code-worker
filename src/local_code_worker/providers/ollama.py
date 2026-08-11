@@ -328,11 +328,6 @@ class OllamaProvider:
             raise ValueError("Ollama stream request must enable streaming")
         if request.json_mode is not self.settings.llm_json_mode:
             raise ValueError("Ollama stream request json_mode must match provider settings")
-        if request.tools:
-            raise ProviderError(
-                "Ollama streaming function tools are not supported yet",
-                category="unsupported_tools",
-            )
         messages = [message.model_dump() for message in request.messages]
         request_body = self._request_body(
             messages,
@@ -379,6 +374,12 @@ class OllamaProvider:
                                 category=_ollama_error_category(request_body),
                             )
                         text = chunk.get("message", {}).get("content", "")
+                        if chunk.get("message", {}).get("tool_calls"):
+                            raise ProviderError(
+                                "Ollama returned a function call during streaming; "
+                                "streamed function-call output is not supported yet",
+                                category="unsupported_streamed_tool_call",
+                            )
                         if not isinstance(text, str):
                             raise ProviderError(
                                 "Ollama stream chunk has invalid message.content",

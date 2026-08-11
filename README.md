@@ -113,8 +113,11 @@ The local Responses endpoint supports strict text input, instructions, reasoning
 non-stream function tools, non-stream JSON responses, ordered text SSE, and bounded process-local
 `previous_response_id` state. Set `store: true` to make a response available for continuation.
 Stored context expires after the configurable `GATEWAY_RESPONSE_STATE_TTL_SECONDS` (two hours by
-default) and is never written to telemetry or disk. Streaming
-function tools and multimodal input are rejected explicitly.
+default) and is never written to telemetry or disk. Request bodies use separate limits:
+`LCW_MAX_UI_REQUEST_BYTES` defaults to 1 MiB and `LCW_MAX_RESPONSES_REQUEST_BYTES` defaults to
+16 MiB. Both must be positive integers, and their defaults work without `/data/.env` changes.
+Chunked request bodies are rejected explicitly. Streaming requests may declare function tools and
+return text, but streamed function-call output and multimodal input remain unsupported.
 
 `GET /v1/models` exposes only the stable aliases `local-code-worker/auto`,
 `local-code-worker/local`, `local-code-worker/mid`, and `local-code-worker/strong`. Physical models

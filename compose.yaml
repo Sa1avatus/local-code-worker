@@ -16,6 +16,8 @@ services:
       GIT_CONFIG_VALUE_0: "/workspace/*"
       GIT_CONFIG_KEY_1: "core.autocrlf"
       GIT_CONFIG_VALUE_1: "true"
+      LCW_MAX_UI_REQUEST_BYTES: ${LCW_MAX_UI_REQUEST_BYTES:-1048576}
+      LCW_MAX_RESPONSES_REQUEST_BYTES: ${LCW_MAX_RESPONSES_REQUEST_BYTES:-16777216}
     ports:
       - "127.0.0.1:8765:8765"
     volumes:

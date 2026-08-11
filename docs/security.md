@@ -36,6 +36,12 @@ Never log Authorization headers, full endpoint query strings, environment dumps,
 raw request prompts. Raw model responses are stored for review without transport headers and must
 remain in ignored report directories.
 
+The JSON body parser applies endpoint-specific positive limits. UI and configuration requests
+default to 1 MiB; `/v1/responses` defaults to 16 MiB because Codex includes instructions and tool
+schemas. Oversized requests return HTTP 413. Responses diagnostics are restricted to request ID,
+method, path, content length, configured limit, status, and elapsed time. Chunked request bodies are
+not supported by the current HTTP server and are rejected explicitly.
+
 ## Web and container boundary
 
 The web server rejects non-local Host and Origin values and must remain published on

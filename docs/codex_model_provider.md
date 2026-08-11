@@ -15,8 +15,10 @@ The gateway supports:
 - bounded `previous_response_id` continuation;
 - legacy, observe-only, and router modes.
 
-Streaming function tools and multimodal input are rejected explicitly. A router tier that changes
-provider is also rejected until that provider has its own endpoint and credential configuration;
+Streaming requests may carry function-tool declarations. Text SSE remains supported, while actual
+streamed function-call output is rejected explicitly as unsupported; non-streaming function calls
+remain supported. Multimodal input is rejected explicitly. A router tier that changes provider is
+also rejected until that provider has its own endpoint and credential configuration;
 the gateway never reuses credentials or a base URL for the wrong provider.
 
 The OpenAI model documentation identifies Responses as the API for current coding models and lists
@@ -39,6 +41,12 @@ base_url = "http://127.0.0.1:8765/v1"
 wire_api = "responses"
 requires_openai_auth = false
 ```
+
+Codex includes instructions and tool schemas even for short messages. `/v1/responses` therefore
+accepts request bodies up to 16 MiB by default through `LCW_MAX_RESPONSES_REQUEST_BYTES`. UI and
+configuration JSON use the separate 1 MiB `LCW_MAX_UI_REQUEST_BYTES` limit. Oversized requests
+return HTTP 413 with `request_too_large`; diagnostic logs contain only request ID, method, path,
+sizes, status, and elapsed time.
 
 The Worker binds to loopback by default. Do not expose port 8765 publicly, and do not place provider
 API keys in Codex prompts or this TOML block.
