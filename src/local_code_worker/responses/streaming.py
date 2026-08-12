@@ -13,7 +13,7 @@ from ..providers.base import (
 )
 from ..telemetry.models import TokenUsage
 from .builder import build_response
-from .schemas import ResponseObject, ResponseOutputMessage, ResponseOutputText
+from .schemas import ResponseFunctionCall, ResponseObject, ResponseOutputMessage, ResponseOutputText
 
 
 class ResponseStreamEvent(StrictModel):
@@ -23,7 +23,7 @@ class ResponseStreamEvent(StrictModel):
     output_index: int | None = Field(default=None, ge=0)
     content_index: int | None = Field(default=None, ge=0)
     item_id: str | None = None
-    item: ResponseOutputMessage | None = None
+    item: ResponseOutputMessage | ResponseFunctionCall | None = None
     part: ResponseOutputText | None = None
     delta: str | None = None
     text: str | None = None

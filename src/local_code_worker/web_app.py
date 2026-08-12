@@ -884,10 +884,9 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                             type="response.output_item.added",
                             sequence_number=last_sequence,
                             output_index=0,
+                            item=fc_item,
                         )))
                         self.wfile.flush()
-                        # Emit the function_call as a custom SSE event
-                        # Codex expects function_call items in the output
                     # Now emit response.completed with all output items
                     break
 
