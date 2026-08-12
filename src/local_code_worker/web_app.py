@@ -29,7 +29,10 @@ from .responses.builder import build_response
 from .responses.schemas import (
     ResponseCreateRequest,
     ResponseErrorDetail,
+    ResponseFunctionCall,
     ResponseObject,
+    ResponseOutputMessage,
+    ResponseOutputText,
 )
 from .responses.state import ResponseStateStore
 from .responses.streaming import ResponseStreamEvent, encode_sse, map_provider_events
@@ -818,6 +821,9 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                         last_sequence = event.sequence_number
                         if event.type == "response.completed":
                             completed_response = event.response
+                            # Don't emit completed yet — we may need to add
+                            # function calls below.
+                            continue
                         self.wfile.write(encode_sse(event))
                         self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
@@ -850,12 +856,43 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 if tool_calls_event is None:
                     break  # No tool calls — streaming is complete
 
-                # Execute hosted tools and loop the model
+                # Separate hosted vs passthrough calls
                 hosted_calls = [
                     fc for fc in tool_calls_event.function_calls if fc.name in hosted_tool_names
                 ]
+                passthrough_calls = [
+                    fc for fc in tool_calls_event.function_calls if fc.name not in hosted_tool_names
+                ]
+
+                # Emit passthrough function calls as SSE events for Codex
+                if passthrough_calls:
+                    _td("stream_passthrough_calls",
+                        calls=[{"name": fc.name, "call_id": fc.call_id} for fc in passthrough_calls],
+                    )
+                    accumulated_stream_calls.extend(passthrough_calls)
+                    # Emit each function call as an output item SSE event
+                    for fc in passthrough_calls:
+                        last_sequence += 1
+                        fc_item = ResponseFunctionCall(
+                            id=fc.call_id,
+                            status="completed",
+                            call_id=fc.call_id,
+                            name=fc.name,
+                            arguments=fc.arguments,
+                        )
+                        self.wfile.write(encode_sse(ResponseStreamEvent(
+                            type="response.output_item.added",
+                            sequence_number=last_sequence,
+                            output_index=0,
+                        )))
+                        self.wfile.flush()
+                        # Emit the function_call as a custom SSE event
+                        # Codex expects function_call items in the output
+                    # Now emit response.completed with all output items
+                    break
+
                 if not hosted_calls:
-                    break  # Only passthrough tool calls — nothing to execute
+                    break  # No hosted calls to execute
                 accumulated_stream_calls.extend(hosted_calls)
                 for call in hosted_calls:
                     try:
@@ -899,7 +936,44 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 close = getattr(last_stream_events, "close", None)
                 if close is not None:
                     close()
+        # Emit the final response.completed SSE event with all output items
+        # (text message + any function calls).
         if completed_response is not None:
+            # Build output items: text message + function calls
+            output_items: list[ResponseOutputMessage | ResponseFunctionCall] = []
+            if completed_response.output_text or not accumulated_stream_calls:
+                output_items.append(ResponseOutputMessage(
+                    id=message_id,
+                    status="completed",
+                    content=[ResponseOutputText(text=completed_response.output_text or prior_text)],
+                ))
+            for fc in accumulated_stream_calls:
+                output_items.append(ResponseFunctionCall(
+                    id=fc.call_id,
+                    status="completed",
+                    call_id=fc.call_id,
+                    name=fc.name,
+                    arguments=fc.arguments,
+                ))
+            final_response = ResponseObject(
+                id=response_id,
+                created_at=created_at,
+                status="completed",
+                model=virtual_model.id,
+                output=output_items,
+                output_text=completed_response.output_text or prior_text,
+                usage=completed_response.usage,
+            )
+            last_sequence += 1
+            try:
+                self.wfile.write(encode_sse(ResponseStreamEvent(
+                    type="response.completed",
+                    sequence_number=last_sequence,
+                    response=final_response,
+                )))
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             record_model_call(
                 provider.last_generation_metadata,
                 kind="response",
@@ -910,17 +984,29 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 tool_count=len(request.tools),
             )
         if request.store and completed_response is not None:
-            RESPONSE_STATE.put(
-                response_id,
-                provider_request.messages
-                + [
-                    ProviderMessage(
+            # Store messages including function calls for continuation
+            stored_messages = list(provider_request.messages)
+            if accumulated_stream_calls:
+                for fc in accumulated_stream_calls:
+                    try:
+                        fc_args = json.loads(fc.arguments) if fc.arguments else {}
+                    except json.JSONDecodeError:
+                        fc_args = {}
+                    stored_messages.append(ProviderMessage(
                         role="assistant",
-                        content=completed_response.output_text,
-                    )
-                ],
-                route_lease,
-            )
+                        content=completed_response.output_text or "",
+                        tool_calls=[{
+                            "id": fc.call_id,
+                            "type": "function",
+                            "function": {"name": fc.name, "arguments": fc_args},
+                        }],
+                    ))
+            else:
+                stored_messages.append(ProviderMessage(
+                    role="assistant",
+                    content=completed_response.output_text,
+                ))
+            RESPONSE_STATE.put(response_id, stored_messages, route_lease)
 
     def do_GET(self) -> None:
         request_url = urlsplit(self.path)
