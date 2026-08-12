@@ -870,21 +870,60 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                         calls=[{"name": fc.name, "call_id": fc.call_id} for fc in passthrough_calls],
                     )
                     accumulated_stream_calls.extend(passthrough_calls)
-                    # Emit each function call as an output item SSE event
+                    # Emit each function call with full SSE lifecycle
                     for fc in passthrough_calls:
-                        last_sequence += 1
                         fc_item = ResponseFunctionCall(
+                            id=fc.call_id,
+                            status="in_progress",
+                            call_id=fc.call_id,
+                            name=fc.name,
+                            arguments="",
+                        )
+                        # output_item.added with in_progress status
+                        last_sequence += 1
+                        self.wfile.write(encode_sse(ResponseStreamEvent(
+                            type="response.output_item.added",
+                            sequence_number=last_sequence,
+                            output_index=0,
+                            item=fc_item,
+                        )))
+                        self.wfile.flush()
+                        # function_call_arguments.delta with full args
+                        last_sequence += 1
+                        self.wfile.write(encode_sse(ResponseStreamEvent(
+                            type="response.function_call_arguments.delta",
+                            sequence_number=last_sequence,
+                            output_index=0,
+                            content_index=0,
+                            item_id=fc.call_id,
+                            delta=fc.arguments,
+                        )))
+                        self.wfile.flush()
+                        # function_call_arguments.done
+                        last_sequence += 1
+                        self.wfile.write(encode_sse(ResponseStreamEvent(
+                            type="response.function_call_arguments.done",
+                            sequence_number=last_sequence,
+                            output_index=0,
+                            content_index=0,
+                            item_id=fc.call_id,
+                            text=fc.arguments,
+                        )))
+                        self.wfile.flush()
+                        # output_item.done with completed status
+                        fc_item_done = ResponseFunctionCall(
                             id=fc.call_id,
                             status="completed",
                             call_id=fc.call_id,
                             name=fc.name,
                             arguments=fc.arguments,
                         )
+                        last_sequence += 1
                         self.wfile.write(encode_sse(ResponseStreamEvent(
-                            type="response.output_item.added",
+                            type="response.output_item.done",
                             sequence_number=last_sequence,
                             output_index=0,
-                            item=fc_item,
+                            item=fc_item_done,
                         )))
                         self.wfile.flush()
                     # Now emit response.completed with all output items
