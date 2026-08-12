@@ -557,7 +557,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                                             "type": "function",
                                             "function": {
                                                 "name": call.name,
-                                                "arguments": call.arguments,
+                                                "arguments": args,
                                             },
                                         }
                                     ],
@@ -771,7 +771,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                                             "type": "function",
                                             "function": {
                                                 "name": call.name,
-                                                "arguments": call.arguments,
+                                                "arguments": call_args,
                                             },
                                         }
                                     ],
