@@ -27,6 +27,16 @@ class ProviderCapabilities(StrictModel):
 class ProviderMessage(StrictModel):
     role: str = Field(min_length=1)
     content: str
+    tool_calls: list[dict[str, object]] | None = Field(default=None, exclude=True)
+    tool_call_id: str | None = Field(default=None, exclude=True)
+
+    def model_dump(self, **kwargs: object) -> dict[str, object]:
+        base = super().model_dump(**kwargs)
+        if self.tool_calls is not None:
+            base["tool_calls"] = self.tool_calls
+        if self.tool_call_id is not None:
+            base["tool_call_id"] = self.tool_call_id
+        return base
 
 
 class ProviderFunctionTool(StrictModel):

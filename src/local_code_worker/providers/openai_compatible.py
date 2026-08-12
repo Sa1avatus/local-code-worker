@@ -261,7 +261,7 @@ class OpenAICompatibleProvider:
     def stream(self, request: ProviderRequest) -> Iterator[ProviderEvent]:
         if not request.stream:
             raise ValueError("OpenAI-compatible stream request must enable streaming")
-        messages = [message.model_dump() for message in request.messages]
+        messages = [message.model_dump(exclude_none=True) for message in request.messages]
         request_body = self._request_body(
             messages,
             request.response_schema,

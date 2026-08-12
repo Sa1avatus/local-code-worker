@@ -547,9 +547,24 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                             "messages": provider_request.messages
                             + [
                                 ProviderMessage(
-                                    role="assistant", content=f"[Calling tool: {call.name}]"
+                                    role="assistant",
+                                    content="",
+                                    tool_calls=[
+                                        {
+                                            "id": call.call_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": call.name,
+                                                "arguments": call.arguments,
+                                            },
+                                        }
+                                    ],
                                 ),
-                                ProviderMessage(role="tool", content=tool_output),
+                                ProviderMessage(
+                                    role="tool",
+                                    content=tool_output,
+                                    tool_call_id=call.call_id,
+                                ),
                             ]
                         }
                     )
@@ -747,9 +762,23 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                             + [
                                 ProviderMessage(
                                     role="assistant",
-                                    content=f"[Calling tool: {call.name}]",
+                                    content="",
+                                    tool_calls=[
+                                        {
+                                            "id": call.call_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": call.name,
+                                                "arguments": call.arguments,
+                                            },
+                                        }
+                                    ],
                                 ),
-                                ProviderMessage(role="tool", content=tool_output),
+                                ProviderMessage(
+                                    role="tool",
+                                    content=tool_output,
+                                    tool_call_id=call.call_id,
+                                ),
                             ]
                         }
                     )

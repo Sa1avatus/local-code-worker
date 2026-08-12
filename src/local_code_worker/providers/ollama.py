@@ -330,7 +330,7 @@ class OllamaProvider:
             raise ValueError("Ollama stream request must enable streaming")
         if request.json_mode is not self.settings.llm_json_mode:
             raise ValueError("Ollama stream request json_mode must match provider settings")
-        messages = [message.model_dump() for message in request.messages]
+        messages = [message.model_dump(exclude_none=True) for message in request.messages]
         request_body = self._request_body(
             messages,
             request.response_schema,
