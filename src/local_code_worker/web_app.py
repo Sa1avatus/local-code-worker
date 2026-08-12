@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import time
 import uuid
 from http import HTTPStatus
@@ -78,6 +79,47 @@ LOCAL_HOSTS = {
     "host.docker.internal",
     "local-code-worker-web",
 }
+
+# --- Responses API tool debug logging ---
+_responses_debug = os.environ.get(
+    "LCW_DEBUG_RESPONSES_TOOLS", ""
+).lower() in ("1", "true", "yes")
+_responses_debug_log = logging.getLogger("local_code_worker.responses_tools")
+
+
+def _td(event: str, **kw: object) -> None:
+    """Log tool pipeline debug info when LCW_DEBUG_RESPONSES_TOOLS=true."""
+    if not _responses_debug:
+        return
+    safe: dict[str, object] = {}
+    for k, v in kw.items():
+        if k in ("api_key", "authorization", "cookie", "token"):
+            safe[k] = "[REDACTED]"
+        elif isinstance(v, str) and len(v) > 500:
+            safe[k] = v[:500] + f"...[{len(v)} chars]"
+        else:
+            safe[k] = v
+    _responses_debug_log.warning(
+        "[TOOLS] %s %s", event, json.dumps(safe, default=str, ensure_ascii=False)
+    )
+
+
+def _summarize_tools(tools: list[object]) -> list[dict[str, object]]:
+    """Redacted tool summary for debug logging."""
+    out: list[dict[str, object]] = []
+    for t in tools:
+        d = t.model_dump(exclude_none=True) if hasattr(t, "model_dump") else {}
+        s: dict[str, object] = {"type": d.get("type", "?")}
+        if "name" in d:
+            s["name"] = d["name"]
+        fn = d.get("function")
+        if isinstance(fn, dict):
+            s["fn_name"] = fn.get("name", "?")
+            params = fn.get("parameters", {})
+            if isinstance(params, dict):
+                s["fn_params"] = list(params.get("properties", {}).keys())
+        out.append(s)
+    return out
 
 
 class RequestBodyTooLarge(ValueError):
@@ -432,6 +474,26 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         hosted_tool_names = adapted.hosted_tool_names
         tool_executor = ToolExecutor() if hosted_tool_names else None
 
+        # Debug: log Codex request details
+        _td("codex_request",
+            request_id=request_id,
+            model=request.model,
+            stream=request.stream,
+            tools_count=len(request.tools),
+            tool_types=[t.type for t in request.tools],
+            tool_names=[getattr(t, "name", None) for t in request.tools],
+            tool_choice=str(request.tool_choice),
+            parallel_tool_calls=request.parallel_tool_calls,
+            previous_response_id=request.previous_response_id,
+            has_instructions=request.instructions is not None,
+            input_types=[getattr(i, "type", "?") for i in (request.input if isinstance(request.input, list) else [])],
+            input_count=len(request.input) if isinstance(request.input, list) else 1,
+            hosted_tool_names=list(hosted_tool_names),
+            passthrough_tool_count=len([t for t in adapted.all_normalized if t.is_function]),
+            provider_tools_count=len(provider_request.tools),
+            provider_tool_names=[t.name for t in provider_request.tools],
+        )
+
         route_lease = None
         if request.previous_response_id is not None:
             previous = RESPONSE_STATE.get_stored(request.previous_response_id)
@@ -486,6 +548,12 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 while True:
                     try:
                         result = CanonicalProviderAdapter(provider).complete(provider_request)
+                        _td("model_result",
+                            round=_tool_round,
+                            content_len=len(result.content),
+                            function_calls=[{"name": fc.name, "call_id": fc.call_id} for fc in result.function_calls],
+                            finish_reason=result.finish_reason,
+                        )
                         break
                     except (ProviderError, WorkerError, OSError) as error:
                         record_model_call(
@@ -532,9 +600,19 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                         )
                 # Check for hosted tool calls
                 if not tool_executor or not result.function_calls:
+                    _td("tool_loop_break",
+                        reason="no_executor_or_no_fc",
+                        has_executor=tool_executor is not None,
+                        fc_count=len(result.function_calls),
+                    )
                     break
                 hosted_calls = [fc for fc in result.function_calls if fc.name in hosted_tool_names]
                 if not hosted_calls:
+                    _td("tool_loop_break",
+                        reason="no_hosted_calls",
+                        all_fc_names=[fc.name for fc in result.function_calls],
+                        hosted_names=list(hosted_tool_names),
+                    )
                     break
                 # Execute hosted tools and continue conversation
                 accumulated_calls.extend(hosted_calls)
@@ -594,6 +672,11 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 escalation_count=route_lease.escalation_count if route_lease else 0,
                 tool_count=len(request.tools),
             )
+            _td("response_complete",
+                response_id=response_id,
+                content_len=len(result.content),
+                function_calls=[{"name": fc.name, "call_id": fc.call_id} for fc in result.function_calls],
+            )
             self._send_json(
                 HTTPStatus.OK,
                 build_response(
@@ -605,12 +688,34 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 ).model_dump(mode="json", exclude_none=True),
             )
             if request.store:
-                RESPONSE_STATE.put(
-                    response_id,
-                    provider_request.messages
-                    + [ProviderMessage(role="assistant", content=result.content)],
-                    route_lease,
-                )
+                # Build stored messages including tool calls for continuation.
+                stored_messages = list(provider_request.messages)
+                if result.function_calls:
+                    # Store assistant message with tool_calls for each call
+                    for fc in result.function_calls:
+                        try:
+                            fc_args = json.loads(fc.arguments) if fc.arguments else {}
+                        except json.JSONDecodeError:
+                            fc_args = {}
+                        stored_messages.append(
+                            ProviderMessage(
+                                role="assistant",
+                                content=result.content or "",
+                                tool_calls=[{
+                                    "id": fc.call_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": fc.name,
+                                        "arguments": fc_args,
+                                    },
+                                }],
+                            )
+                        )
+                elif result.content:
+                    stored_messages.append(
+                        ProviderMessage(role="assistant", content=result.content)
+                    )
+                RESPONSE_STATE.put(response_id, stored_messages, route_lease)
             return
         max_tool_rounds = 5
         accumulated_stream_calls: list[ProviderFunctionCall] = []
