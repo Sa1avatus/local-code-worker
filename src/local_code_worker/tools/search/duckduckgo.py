@@ -73,12 +73,12 @@ def _parse_lite_html(html: str, max_results: int) -> list[SearchResult]:
 
     # Find result links
     link_pattern = re.compile(
-        r'<a[^>]+class="result-link"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+        r"<a[^>]+href=['\"]([^'\"]*)['\"].*?class=['\"]result-link['\"]['\"]?[^>]*>(.*?)</a>",
         re.DOTALL,
     )
     # Find snippets
     snippet_pattern = re.compile(
-        r'<td\s+class="result-snippet"[^>]*>(.*?)</td>',
+        r"<td\s+class=['\"]result-snippet['\"][^>]*>(.*?)</td>",
         re.DOTALL,
     )
 
