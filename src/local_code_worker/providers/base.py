@@ -94,8 +94,20 @@ class ProviderCompletedEvent(StrictModel):
     finish_reason: str | None = None
 
 
+class ProviderToolCallsEvent(StrictModel):
+    """Emitted when the model requests tool calls during streaming."""
+
+    type: Literal["tool_calls"] = "tool_calls"
+    sequence: int = Field(ge=0)
+    function_calls: list[ProviderFunctionCall] = Field(default_factory=list)
+
+
 ProviderEvent: TypeAlias = (
-    ProviderStartedEvent | ProviderTextDeltaEvent | ProviderUsageEvent | ProviderCompletedEvent
+    ProviderStartedEvent
+    | ProviderTextDeltaEvent
+    | ProviderToolCallsEvent
+    | ProviderUsageEvent
+    | ProviderCompletedEvent
 )
 
 

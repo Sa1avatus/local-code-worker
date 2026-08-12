@@ -21,12 +21,14 @@ from .base import (
     ProviderCapability,
     ProviderCompletedEvent,
     ProviderEvent,
+    ProviderFunctionCall,
     ProviderFunctionTool,
     ProviderFunctionToolChoice,
     ProviderMessage,
     ProviderRequest,
     ProviderStartedEvent,
     ProviderTextDeltaEvent,
+    ProviderToolCallsEvent,
     ProviderUsageEvent,
 )
 
@@ -342,6 +344,7 @@ class OllamaProvider:
         finish_reason: str | None = None
         saw_done = False
         usage: dict[str, int] = {}
+        pending_function_calls: list[ProviderFunctionCall] = []
         sequence = 0
         started_at = datetime.now(UTC)
         started = time.monotonic()
@@ -375,11 +378,14 @@ class OllamaProvider:
                             )
                         text = chunk.get("message", {}).get("content", "")
                         if chunk.get("message", {}).get("tool_calls"):
-                            raise ProviderError(
-                                "Ollama returned a function call during streaming; "
-                                "streamed function-call output is not supported yet",
-                                category="unsupported_streamed_tool_call",
-                            )
+                            for tc in _parse_ollama_function_calls(chunk["message"]):
+                                pending_function_calls.append(
+                                    ProviderFunctionCall(
+                                        call_id=tc.call_id,
+                                        name=tc.name,
+                                        arguments=tc.arguments,
+                                    )
+                                )
                         if not isinstance(text, str):
                             raise ProviderError(
                                 "Ollama stream chunk has invalid message.content",
@@ -423,6 +429,20 @@ class OllamaProvider:
                 "Ollama stream ended before a done chunk",
                 category="truncated_stream",
             )
+        # Fallback: try to parse tool calls from text content for models
+        # that don't use native tool_calls during streaming.
+        if request.tools and not pending_function_calls:
+            content = "".join(parts)
+            text_call = _parse_ollama_text_function_call(content, request.tools)
+            if text_call is not None:
+                pending_function_calls.append(
+                    ProviderFunctionCall(
+                        call_id=text_call.call_id,
+                        name=text_call.name,
+                        arguments=text_call.arguments,
+                    )
+                )
+                parts = []
         completed_at = datetime.now(UTC)
         self.last_generation_metadata = GenerationMetadata(
             provider=ProviderName.OLLAMA,
@@ -448,6 +468,12 @@ class OllamaProvider:
         )
         yield ProviderUsageEvent(sequence=sequence, usage=token_usage)
         sequence += 1
+        if pending_function_calls:
+            yield ProviderToolCallsEvent(
+                sequence=sequence,
+                function_calls=pending_function_calls,
+            )
+            sequence += 1
         yield ProviderCompletedEvent(sequence=sequence, finish_reason=finish_reason)
 
     def _request_body(

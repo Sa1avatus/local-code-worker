@@ -829,3 +829,208 @@ def test_ollama_pull_model_http_error_does_not_expose_body() -> None:
         list(provider.pull_model("qwen:test"))
     assert captured.value.category == "http_error"
     assert "SENSITIVE-RESPONSE-BODY" not in str(captured.value)
+
+
+# --- Streaming tool-call tests ---
+
+
+def test_ollama_stream_yields_tool_calls_event() -> None:
+    """Ollama streaming should yield ProviderToolCallsEvent instead of raising."""
+    from local_code_worker.providers.base import ProviderCompletedEvent, ProviderToolCallsEvent
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        tool_chunk = json.dumps(
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tc1",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": {"query": "fastapi version"},
+                            },
+                        }
+                    ],
+                },
+                "done": True,
+                "done_reason": "stop",
+                "prompt_eval_count": 10,
+                "eval_count": 5,
+            }
+        )
+        return httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    '{"message":{"content":"Let me look that up."},"done":false}',
+                    tool_chunk,
+                ]
+            ),
+        )
+
+    provider = OllamaProvider(ollama_settings(llm_json_mode="none"), httpx.MockTransport(handler))
+    request = ProviderRequest(
+        messages=[ProviderMessage(role="user", content="What is the latest FastAPI version?")],
+        max_output_characters=500,
+        stream=True,
+        json_mode=JsonMode.NONE,
+        tools=[
+            ProviderFunctionTool(
+                name="web_search",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+            )
+        ],
+    )
+    events = list(provider.stream(request))
+
+    tool_events = [e for e in events if isinstance(e, ProviderToolCallsEvent)]
+    assert len(tool_events) == 1
+    assert tool_events[0].function_calls[0].name == "web_search"
+    assert tool_events[0].function_calls[0].call_id == "tc1"
+    assert '"query"' in tool_events[0].function_calls[0].arguments
+    # Should still have completed event
+    assert isinstance(events[-1], ProviderCompletedEvent)
+
+
+def test_ollama_stream_text_tool_call_fallback() -> None:
+    """When the model encodes a tool call as text, stream should still detect it."""
+    from local_code_worker.providers.base import ProviderToolCallsEvent
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    '{"message":{"content":"{\\"name\\":\\"web_search\\",\\"arguments\\":{\\"query\\":\\"fastapi\\"}}"},"done":true,"done_reason":"stop"}',
+                ]
+            ),
+        )
+
+    provider = OllamaProvider(
+        ollama_settings(llm_json_mode="none"),
+        httpx.MockTransport(handler),
+    )
+    request = ProviderRequest(
+        messages=[ProviderMessage(role="user", content="search")],
+        max_output_characters=500,
+        stream=True,
+        tools=[ProviderFunctionTool(name="web_search", parameters={"type": "object"})],
+    )
+    events = list(provider.stream(request))
+
+    tool_events = [e for e in events if isinstance(e, ProviderToolCallsEvent)]
+    assert len(tool_events) == 1
+    assert tool_events[0].function_calls[0].name == "web_search"
+
+
+def test_openai_stream_yields_tool_calls_event() -> None:
+    """OpenAI-compatible streaming should accumulate tool-call deltas."""
+    from local_code_worker.providers.base import ProviderCompletedEvent, ProviderToolCallsEvent
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        def sse(obj: object) -> str:
+            return f"data: {json.dumps(obj, separators=(',', ':'))}"
+
+        lines = [
+            sse({"choices": [{"delta": {"role": "assistant", "content": ""}}]}),
+            sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_abc",
+                                        "type": "function",
+                                        "function": {"name": "web_search", "arguments": ""},
+                                    },
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ),
+            sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {"index": 0, "function": {"arguments": '{"query":'}},
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ),
+            sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {"index": 0, "function": {"arguments": '"fastapi"}'}},
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ),
+            sse({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            "data: [DONE]",
+        ]
+        return httpx.Response(200, text="\n".join(lines) + "\n")
+
+    provider = OpenAICompatibleProvider(
+        openai_settings(llm_json_mode="none"),
+        httpx.MockTransport(handler),
+    )
+    request = ProviderRequest(
+        messages=[ProviderMessage(role="user", content="What is the latest FastAPI?")],
+        max_output_characters=500,
+        stream=True,
+        tools=[
+            ProviderFunctionTool(
+                name="web_search",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+            )
+        ],
+    )
+    events = list(provider.stream(request))
+
+    tool_events = [e for e in events if isinstance(e, ProviderToolCallsEvent)]
+    assert len(tool_events) == 1
+    tc = tool_events[0].function_calls[0]
+    assert tc.name == "web_search"
+    assert tc.call_id == "call_abc"
+    assert tc.arguments == '{"query":"fastapi"}'
+    assert isinstance(events[-1], ProviderCompletedEvent)
+
+
+def test_openai_stream_no_tool_calls_yields_no_event() -> None:
+    """OpenAI streaming with plain text should not emit ProviderToolCallsEvent."""
+    from local_code_worker.providers.base import ProviderToolCallsEvent
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        lines = [
+            'data: {"choices":[{"delta":{"content":"hello"}}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            "data: [DONE]",
+        ]
+        return httpx.Response(200, text="\n".join(lines) + "\n")
+
+    provider = OpenAICompatibleProvider(
+        openai_settings(llm_json_mode="none"),
+        httpx.MockTransport(handler),
+    )
+    request = ProviderRequest(
+        messages=[ProviderMessage(role="user", content="hi")],
+        max_output_characters=500,
+        stream=True,
+    )
+    events = list(provider.stream(request))
+
+    tool_events = [e for e in events if isinstance(e, ProviderToolCallsEvent)]
+    assert len(tool_events) == 0

@@ -20,7 +20,7 @@ from .inference_queue import InferenceLease, InferenceQueue
 from .models import JsonMode, ProviderName
 from .providers import create_provider
 from .providers.adapter import CanonicalProviderAdapter
-from .providers.base import ProviderMessage
+from .providers.base import ProviderFunctionCall, ProviderMessage, ProviderToolCallsEvent
 from .providers.ollama import OllamaProvider
 from .request_limits import RequestLimits, load_request_limits
 from .responses.adapter import adapt_response_request
@@ -477,6 +477,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             import json as _json
 
             from .providers.base import ProviderFunctionCall as _PFC
+
             accumulated_calls: list[_PFC] = []
             max_tool_rounds = 5
             for _tool_round in range(max_tool_rounds):
@@ -530,10 +531,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 # Check for hosted tool calls
                 if not tool_executor or not result.function_calls:
                     break
-                hosted_calls = [
-                    fc for fc in result.function_calls
-                    if fc.name in hosted_tool_names
-                ]
+                hosted_calls = [fc for fc in result.function_calls if fc.name in hosted_tool_names]
                 if not hosted_calls:
                     break
                 # Execute hosted tools and continue conversation
@@ -546,8 +544,11 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                     tool_output = tool_executor.execute(call.name, args)
                     provider_request = provider_request.model_copy(
                         update={
-                            "messages": provider_request.messages + [
-                                ProviderMessage(role="assistant", content=f"[Calling tool: {call.name}]"),
+                            "messages": provider_request.messages
+                            + [
+                                ProviderMessage(
+                                    role="assistant", content=f"[Calling tool: {call.name}]"
+                                ),
                                 ProviderMessage(role="tool", content=tool_output),
                             ]
                         }
@@ -555,14 +556,11 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 # Loop continues - model sees tool results and generates final answer
             # Merge accumulated hosted calls with any remaining passthrough calls
             passthrough_calls = [
-                fc for fc in result.function_calls
-                if fc.name not in hosted_tool_names
+                fc for fc in result.function_calls if fc.name not in hosted_tool_names
             ]
             all_calls = accumulated_calls + passthrough_calls
             if all_calls:
-                result = result.model_copy(
-                    update={"function_calls": all_calls}
-                )
+                result = result.model_copy(update={"function_calls": all_calls})
             record_routing_plan(response_id, routing_plan)
             log_routing_decision(
                 request_id=request_id,
@@ -597,113 +595,174 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                     route_lease,
                 )
             return
-        while True:
-            provider_events = iter(provider.stream(provider_request))
-            try:
-                first_provider_event = next(provider_events)
-                break
-            except (ProviderError, WorkerError, OSError) as error:
-                fallback = resolve_gateway_fallback(
-                    settings,
-                    routing_settings,
-                    provider_request,
-                    routing_plan.actual.tier,
-                )
-                if fallback is None:
+        max_tool_rounds = 5
+        accumulated_stream_calls: list[ProviderFunctionCall] = []
+        completed_response = None
+        last_sequence = -1
+        prior_text = ""
+        last_stream_events = None
+        try:
+            for _tool_round in range(max_tool_rounds):
+                # Get provider stream with fallback retry
+                while True:
+                    provider_events = iter(provider.stream(provider_request))
+                    try:
+                        first_provider_event = next(provider_events)
+                        break
+                    except (ProviderError, WorkerError, OSError) as error:
+                        fallback = resolve_gateway_fallback(
+                            settings,
+                            routing_settings,
+                            provider_request,
+                            routing_plan.actual.tier,
+                        )
+                        if fallback is None:
+                            record_routing_plan(response_id, routing_plan)
+                            raise
+                        settings, routing_plan = fallback
+                        if route_lease is not None:
+                            route_lease, escalation = escalate_route_lease(
+                                route_lease,
+                                routing_plan.actual,
+                                escalation_reason_for(error),
+                                request_id=request_id,
+                                response_id=response_id,
+                                max_escalations=routing_settings.max_escalations_per_lease,
+                            )
+                            record_escalation(escalation)
+                            record_route_lease(route_lease)
+                            log_escalation(escalation)
+                            routing_plan = routing_plan.model_copy(
+                                update={
+                                    "actual": routing_plan.actual.model_copy(
+                                        update={"lease_id": route_lease.lease_id}
+                                    )
+                                }
+                            )
+                        settings = self._settings_with_tier_secret(settings)
+                        provider = create_provider(settings)
+                        lease.model = settings.llm_model
+                        lease.route = routing_plan.actual.tier.value
+                        lease.idle_cleanup = (
+                            provider.unload_model if isinstance(provider, OllamaProvider) else None
+                        )
+                    except StopIteration as error:
+                        raise ProviderError(
+                            "provider stream ended before the first event",
+                            category="empty_stream",
+                        ) from error
+
+                if _tool_round == 0:
                     record_routing_plan(response_id, routing_plan)
-                    raise
-                settings, routing_plan = fallback
-                if route_lease is not None:
-                    route_lease, escalation = escalate_route_lease(
-                        route_lease,
-                        routing_plan.actual,
-                        escalation_reason_for(error),
+                    log_routing_decision(
                         request_id=request_id,
                         response_id=response_id,
-                        max_escalations=routing_settings.max_escalations_per_lease,
+                        previous_response_id=request.previous_response_id,
+                        decision=routing_plan.actual,
                     )
-                    record_escalation(escalation)
-                    record_route_lease(route_lease)
-                    log_escalation(escalation)
-                    routing_plan = routing_plan.model_copy(
-                        update={
-                            "actual": routing_plan.actual.model_copy(
-                                update={"lease_id": route_lease.lease_id}
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+
+                raw_events = chain([first_provider_event], provider_events)
+                last_stream_events = provider_events
+
+                # Intercept ProviderToolCallsEvent — stop forwarding and
+                # hand control back to the tool loop.
+                tool_calls_event = None
+
+                def _intercept_events(source):
+                    nonlocal tool_calls_event
+                    for ev in source:
+                        if isinstance(ev, ProviderToolCallsEvent):
+                            tool_calls_event = ev
+                            return
+                        yield ev
+
+                try:
+                    for event in map_provider_events(
+                        _intercept_events(raw_events),
+                        provider=settings.llm_provider,
+                        model=virtual_model.id,
+                        response_id=response_id,
+                        message_id=message_id,
+                        created_at=created_at,
+                        start_sequence=last_sequence + 1 if _tool_round > 0 else 0,
+                        emit_preamble=(_tool_round == 0),
+                        prior_text=prior_text,
+                    ):
+                        last_sequence = event.sequence_number
+                        if event.type == "response.completed":
+                            completed_response = event.response
+                        self.wfile.write(encode_sse(event))
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                except (ProviderError, WorkerError, ValidationError, ValueError, OSError) as error:
+                    failed = ResponseObject(
+                        id=response_id,
+                        created_at=created_at,
+                        status="failed",
+                        model=request.model,
+                        output=[],
+                        output_text="",
+                        error=ResponseErrorDetail(
+                            message=str(error),
+                            type="server_error",
+                        ),
+                    )
+                    self.wfile.write(
+                        encode_sse(
+                            ResponseStreamEvent(
+                                type="response.failed",
+                                sequence_number=last_sequence + 1,
+                                response=failed,
                             )
-                        }
-                    )
-                settings = self._settings_with_tier_secret(settings)
-                provider = create_provider(settings)
-                lease.model = settings.llm_model
-                lease.route = routing_plan.actual.tier.value
-                lease.idle_cleanup = (
-                    provider.unload_model if isinstance(provider, OllamaProvider) else None
-                )
-            except StopIteration as error:
-                raise ProviderError(
-                    "provider stream ended before the first event",
-                    category="empty_stream",
-                ) from error
-        record_routing_plan(response_id, routing_plan)
-        log_routing_decision(
-            request_id=request_id,
-            response_id=response_id,
-            previous_response_id=request.previous_response_id,
-            decision=routing_plan.actual,
-        )
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        provider_events = chain([first_provider_event], provider_events)
-        last_sequence = -1
-        completed_response = None
-        try:
-            try:
-                for event in map_provider_events(
-                    provider_events,
-                    provider=settings.llm_provider,
-                    model=virtual_model.id,
-                    response_id=response_id,
-                    message_id=message_id,
-                    created_at=created_at,
-                ):
-                    last_sequence = event.sequence_number
-                    if event.type == "response.completed":
-                        completed_response = event.response
-                    self.wfile.write(encode_sse(event))
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                return
-            except (ProviderError, WorkerError, ValidationError, ValueError, OSError) as error:
-                failed = ResponseObject(
-                    id=response_id,
-                    created_at=created_at,
-                    status="failed",
-                    model=request.model,
-                    output=[],
-                    output_text="",
-                    error=ResponseErrorDetail(
-                        message=str(error),
-                        type="server_error",
-                    ),
-                )
-                self.wfile.write(
-                    encode_sse(
-                        ResponseStreamEvent(
-                            type="response.failed",
-                            sequence_number=last_sequence + 1,
-                            response=failed,
                         )
                     )
-                )
-                self.wfile.flush()
-                return
+                    self.wfile.flush()
+                    return
+
+                if tool_calls_event is None:
+                    break  # No tool calls — streaming is complete
+
+                # Execute hosted tools and loop the model
+                hosted_calls = [
+                    fc for fc in tool_calls_event.function_calls if fc.name in hosted_tool_names
+                ]
+                if not hosted_calls:
+                    break  # Only passthrough tool calls — nothing to execute
+                accumulated_stream_calls.extend(hosted_calls)
+                for call in hosted_calls:
+                    try:
+                        call_args = json.loads(call.arguments) if call.arguments else {}
+                    except json.JSONDecodeError:
+                        call_args = {}
+                    tool_output = tool_executor.execute(call.name, call_args)
+                    provider_request = provider_request.model_copy(
+                        update={
+                            "messages": provider_request.messages
+                            + [
+                                ProviderMessage(
+                                    role="assistant",
+                                    content=f"[Calling tool: {call.name}]",
+                                ),
+                                ProviderMessage(role="tool", content=tool_output),
+                            ]
+                        }
+                    )
+                # Accumulate text so far for the final response
+                if completed_response is not None:
+                    prior_text = completed_response.output_text
+                completed_response = None
+                # Loop continues — model sees tool results and generates answer
         finally:
-            close = getattr(provider_events, "close", None)
-            if close is not None:
-                close()
+            if last_stream_events is not None:
+                close = getattr(last_stream_events, "close", None)
+                if close is not None:
+                    close()
         if completed_response is not None:
             record_model_call(
                 provider.last_generation_metadata,
@@ -769,6 +828,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 return
             if request_url.path == "/api/unload-policy":
                 from dotenv import dotenv_values as _dv
+
                 env_vals = _dv(self.env_path)
                 policy = str(env_vals.get("LLM_UNLOAD_POLICY") or INFERENCE_QUEUE._unload_policy)
                 options = ["immediate", "5", "10", "30", "never"]
@@ -849,6 +909,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                     raise ValueError(f"Invalid policy: {policy}. Must be one of: {sorted(valid)}")
                 INFERENCE_QUEUE.set_unload_policy(policy)
                 from dotenv import set_key as _sk
+
                 _sk(str(self.env_path), "LLM_UNLOAD_POLICY", policy)
                 self._send_json(HTTPStatus.OK, {"policy": policy})
                 return

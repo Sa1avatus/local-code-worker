@@ -37,47 +37,69 @@ def map_provider_events(
     response_id: str,
     message_id: str,
     created_at: int,
+    start_sequence: int = 0,
+    emit_preamble: bool = True,
+    prior_text: str = "",
 ) -> Iterator[ResponseStreamEvent]:
-    sequence = 0
+    """Map provider events to Responses-API SSE events.
+
+    Parameters
+    ----------
+    start_sequence:
+        Sequence number to start from (non-zero when continuing after a
+        tool-call round).
+    emit_preamble:
+        Whether to emit ``response.created``, ``output_item.added``, and
+        ``content_part.added`` preamble events.  Set to *False* for
+        continuation rounds after a tool-call interlude.
+    prior_text:
+        Text accumulated from previous tool-call rounds.  Included in the
+        final ``response.completed`` payload so the client sees the full
+        answer.
+    """
+    sequence = start_sequence
     text_parts: list[str] = []
     usage = TokenUsage()
     finish_reason: str | None = None
-    created = ResponseObject(
-        id=response_id,
-        created_at=created_at,
-        status="in_progress",
-        model=model,
-        output=[],
-        output_text="",
-    )
-    yield ResponseStreamEvent(
-        type="response.created",
-        sequence_number=sequence,
-        response=created,
-    )
-    sequence += 1
-    output_item = ResponseOutputMessage(
-        id=message_id,
-        status="incomplete",
-        content=[],
-    )
-    yield ResponseStreamEvent(
-        type="response.output_item.added",
-        sequence_number=sequence,
-        output_index=0,
-        item=output_item,
-    )
-    sequence += 1
-    empty_part = ResponseOutputText(text="")
-    yield ResponseStreamEvent(
-        type="response.content_part.added",
-        sequence_number=sequence,
-        output_index=0,
-        content_index=0,
-        item_id=message_id,
-        part=empty_part,
-    )
-    sequence += 1
+
+    if emit_preamble:
+        created = ResponseObject(
+            id=response_id,
+            created_at=created_at,
+            status="in_progress",
+            model=model,
+            output=[],
+            output_text="",
+        )
+        yield ResponseStreamEvent(
+            type="response.created",
+            sequence_number=sequence,
+            response=created,
+        )
+        sequence += 1
+        output_item = ResponseOutputMessage(
+            id=message_id,
+            status="incomplete",
+            content=[],
+        )
+        yield ResponseStreamEvent(
+            type="response.output_item.added",
+            sequence_number=sequence,
+            output_index=0,
+            item=output_item,
+        )
+        sequence += 1
+        empty_part = ResponseOutputText(text="")
+        yield ResponseStreamEvent(
+            type="response.content_part.added",
+            sequence_number=sequence,
+            output_index=0,
+            content_index=0,
+            item_id=message_id,
+            part=empty_part,
+        )
+        sequence += 1
+
     for event in events:
         if isinstance(event, ProviderTextDeltaEvent):
             text_parts.append(event.delta)
@@ -94,15 +116,17 @@ def map_provider_events(
             usage = event.usage
         elif isinstance(event, ProviderCompletedEvent):
             finish_reason = event.finish_reason
-    text = "".join(text_parts)
-    completed_part = ResponseOutputText(text=text)
+
+    current_text = "".join(text_parts)
+    full_text = prior_text + current_text
+    completed_part = ResponseOutputText(text=full_text)
     yield ResponseStreamEvent(
         type="response.output_text.done",
         sequence_number=sequence,
         output_index=0,
         content_index=0,
         item_id=message_id,
-        text=text,
+        text=full_text,
     )
     sequence += 1
     yield ResponseStreamEvent(
@@ -114,8 +138,10 @@ def map_provider_events(
         part=completed_part,
     )
     sequence += 1
-    completed_item = output_item.model_copy(
-        update={"status": "completed", "content": [completed_part]}
+    completed_item = ResponseOutputMessage(
+        id=message_id,
+        status="completed",
+        content=[completed_part],
     )
     yield ResponseStreamEvent(
         type="response.output_item.done",
@@ -128,7 +154,7 @@ def map_provider_events(
         ProviderResult(
             provider=provider,
             model=model,
-            content=text,
+            content=full_text,
             finish_reason=finish_reason,
             usage=usage,
             latency_ms=0,

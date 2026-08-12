@@ -22,12 +22,14 @@ from .base import (
     ProviderCapability,
     ProviderCompletedEvent,
     ProviderEvent,
+    ProviderFunctionCall,
     ProviderFunctionTool,
     ProviderFunctionToolChoice,
     ProviderMessage,
     ProviderRequest,
     ProviderStartedEvent,
     ProviderTextDeltaEvent,
+    ProviderToolCallsEvent,
     ProviderUsageEvent,
 )
 
@@ -273,6 +275,8 @@ class OpenAICompatibleProvider:
         total = 0
         finish_reason: str | None = None
         usage: dict[str, int] = {}
+        # Accumulate tool call deltas by index.
+        tool_call_acc: dict[int, dict[str, str]] = {}
         sequence = 0
         started_at = datetime.now(UTC)
         started = time.monotonic()
@@ -305,11 +309,17 @@ class OpenAICompatibleProvider:
                             choice = choices[0] if choices else {}
                             delta = choice.get("delta", {})
                             if delta.get("tool_calls"):
-                                raise ProviderError(
-                                    "Provider returned a function call during streaming; "
-                                    "streamed function-call output is not supported yet",
-                                    category="unsupported_streamed_tool_call",
-                                )
+                                for tc_delta in delta["tool_calls"]:
+                                    idx = tc_delta.get("index", 0)
+                                    if idx not in tool_call_acc:
+                                        tool_call_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                                    if tc_delta.get("id"):
+                                        tool_call_acc[idx]["id"] = tc_delta["id"]
+                                    fn = tc_delta.get("function", {})
+                                    if fn.get("name"):
+                                        tool_call_acc[idx]["name"] = fn["name"]
+                                    if fn.get("arguments"):
+                                        tool_call_acc[idx]["arguments"] += fn["arguments"]
                             text = delta.get("content") or delta.get("refusal") or ""
                         except (ValueError, TypeError, AttributeError) as error:
                             raise ProviderError(
@@ -355,6 +365,18 @@ class OpenAICompatibleProvider:
                 category="transport_error",
             ) from error
         completed_at = datetime.now(UTC)
+        # Build function-call metadata from accumulated tool calls.
+        fc_metadata: list[FunctionCallMetadata] = []
+        if tool_call_acc:
+            for idx, acc in sorted(tool_call_acc.items()):
+                if acc["name"]:
+                    fc_metadata.append(
+                        FunctionCallMetadata(
+                            call_id=acc["id"] or f"call_{idx}",
+                            name=acc["name"],
+                            arguments=acc["arguments"],
+                        )
+                    )
         self.last_generation_metadata = GenerationMetadata(
             provider=ProviderName.OPENAI_COMPATIBLE,
             model=self.settings.llm_model,
@@ -371,6 +393,7 @@ class OpenAICompatibleProvider:
             time_to_first_token_ms=(
                 (first_token_at - started) * 1000 if first_token_at is not None else None
             ),
+            function_calls=fc_metadata,
         )
         token_usage = TokenUsage(
             input_tokens=int(usage.get("prompt_tokens", 0)),
@@ -379,6 +402,23 @@ class OpenAICompatibleProvider:
         )
         yield ProviderUsageEvent(sequence=sequence, usage=token_usage)
         sequence += 1
+        # Emit accumulated tool calls if any.
+        if tool_call_acc:
+            pending_calls = [
+                ProviderFunctionCall(
+                    call_id=acc["id"] or f"call_{idx}",
+                    name=acc["name"],
+                    arguments=acc["arguments"],
+                )
+                for idx, acc in sorted(tool_call_acc.items())
+                if acc["name"]
+            ]
+            if pending_calls:
+                yield ProviderToolCallsEvent(
+                    sequence=sequence,
+                    function_calls=pending_calls,
+                )
+                sequence += 1
         yield ProviderCompletedEvent(sequence=sequence, finish_reason=finish_reason)
 
     def _request_body(

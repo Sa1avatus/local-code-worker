@@ -76,3 +76,42 @@ def test_sse_encoding_uses_event_name_and_compact_json() -> None:
     lines = encoded.splitlines()
     assert lines[0] == "event: response.created"
     assert json.loads(lines[1].removeprefix("data: "))["sequence_number"] == 0
+
+
+def test_map_provider_events_continuation_skips_preamble() -> None:
+    """Continuation rounds should skip preamble and preserve prior text."""
+    provider_events = [
+        ProviderTextDeltaEvent(sequence=0, delta=" world"),
+        ProviderUsageEvent(
+            sequence=1,
+            usage=TokenUsage(
+                input_tokens=2,
+                output_tokens=1,
+                provenance=UsageProvenance.EXACT,
+            ),
+        ),
+        ProviderCompletedEvent(sequence=2, finish_reason="stop"),
+    ]
+
+    events = list(
+        map_provider_events(
+            provider_events,
+            provider=ProviderName.OLLAMA,
+            model="qwen:test",
+            response_id="resp_test",
+            message_id="msg_test",
+            created_at=1_786_233_600,
+            start_sequence=10,
+            emit_preamble=False,
+            prior_text="hello",
+        )
+    )
+
+    # No preamble events
+    assert events[0].type == "response.output_text.delta"
+    assert events[0].sequence_number == 10
+    # Final response should combine prior_text + current deltas
+    completed = events[-1]
+    assert completed.type == "response.completed"
+    assert completed.response is not None
+    assert completed.response.output_text == "hello world"
