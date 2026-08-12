@@ -420,11 +420,13 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             self._read_json(max_bytes=REQUEST_LIMITS.max_responses_request_bytes)
         )
         virtual_model = VIRTUAL_MODEL_REGISTRY.resolve(request.model)
-        settings = self._settings().model_copy(update={"llm_stream": request.stream})
+        settings = self._settings().model_copy(
+            update={"llm_stream": request.stream, "llm_json_mode": JsonMode.NONE}
+        )
         adapted = adapt_response_request(
             request,
             max_output_characters=settings.llm_max_output_characters,
-            json_mode=settings.llm_json_mode,
+            json_mode=JsonMode.NONE,
         )
         provider_request = adapted.request
         hosted_tool_names = adapted.hosted_tool_names
