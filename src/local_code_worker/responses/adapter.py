@@ -135,17 +135,22 @@ def adapt_response_request(
                     )
                 )
 
-    # Normalize all tools to identify hosted vs passthrough
+    # Normalize all tools to identify hosted vs passthrough.
+    # normalize_request_tools handles both top-level tools and
+    # additional_tools from the input array.
     all_normalized = normalize_request_tools(request)
-
-    # Also normalize additional_tools from input
-    from ..tools.normalizer import normalize_tool_dict
-    for raw_dict in additional_tool_dicts:
-        if isinstance(raw_dict, dict):
-            all_normalized.extend(normalize_tool_dict(raw_dict))
 
     hosted, passthrough = separate_tools(all_normalized)
     hosted_names = frozenset(t.name for t in hosted)
+
+    # Deduplicate passthrough tools by name (keep first occurrence)
+    seen_names: set[str] = set()
+    deduped: list[NormalizedTool] = []
+    for tool in passthrough:
+        if tool.name not in seen_names:
+            seen_names.add(tool.name)
+            deduped.append(tool)
+    passthrough = deduped
 
     # Filter passthrough tools to keep the model's tool list manageable
     passthrough = _filter_passthrough_tools(passthrough, max_passthrough_tools)
