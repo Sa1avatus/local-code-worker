@@ -19,7 +19,7 @@ class ResponseInputMessage(StrictModel):
 
 
 class ResponseInputText(StrictModel):
-    type: Literal["input_text"] = "input_text"
+    type: Literal["input_text", "output_text"] = "input_text"
     text: str
 
 class ResponseInputFunctionCall(StrictModel):
