@@ -98,6 +98,32 @@ class RoutingTierSettingsInput(BaseModel):
         return self
 
 
+class TierModelDiscoveryInput(BaseModel):
+    """Per-tier model discovery request: provider and endpoint of one card only."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    tier: ModelTier | None = None
+    provider: ProviderName
+    base_url: HttpUrl
+    api_key: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def validate_discovery_request(self) -> "TierModelDiscoveryInput":
+        if self.provider is ProviderName.OLLAMA and self.base_url.host not in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "host.docker.internal",
+        }:
+            raise ValueError("Ollama base URL must use a loopback host")
+        if self.api_key is not None:
+            secret = self.api_key.get_secret_value()
+            if any(ord(character) < 32 or ord(character) == 127 for character in secret):
+                raise ValueError("API key contains an ASCII control character")
+        return self
+
+
 class GatewaySettingsInput(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 

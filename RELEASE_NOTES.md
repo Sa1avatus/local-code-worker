@@ -3,6 +3,23 @@
 This file preserves the original release-note narrative. The canonical version-by-version history
 is now maintained in [`CHANGELOG.md`](CHANGELOG.md).
 
+## Unreleased
+
+### Web UI and model discovery
+
+- Replaced the single shared "Найти локальные модели" button with a per-tier "Найти модели"
+  button inside each LOCAL/MID/STRONG card. Every search uses only that card's provider, Base
+  URL, and API key (the key typed in the card, or the key stored for that tier), and loading
+  state, results, and error messages stay independent per tier.
+- Ollama discovery uses `GET {base_url}/api/tags`; OpenAI-compatible discovery uses
+  `GET {base_url}/v1/models` with Base URL normalization so a missing `/v1` suffix is added
+  exactly once. Requests without an API key are sent without an `Authorization` header.
+
+### Validation
+
+- `python -m ruff check src tests`
+- `python -m pytest tests -q` (`365 passed`)
+
 ## 1.2.0
 
 ### Model execution and observability

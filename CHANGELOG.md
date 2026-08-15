@@ -6,6 +6,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 follow Semantic Versioning. The repository currently has no Git tags; dates and versions below are
 derived from project metadata and commit history.
 
+## [Unreleased]
+
+### Added
+
+- Added per-tier model discovery in the routing UI: each LOCAL/MID/STRONG card has its own
+  "Найти модели" button that queries only that card's provider, Base URL, and API key through the
+  backend proxy (`POST /api/v2/discover-models`). Loading state and results are tracked
+  independently per tier, and the current model selection is preserved after a search.
+- Added Ollama discovery via `GET {base_url}/api/tags` and OpenAI-compatible discovery via
+  `GET {base_url}/v1/models`, normalizing Base URLs so a missing `/v1` suffix is added once
+  (never `/v1/v1/models` or `//v1/models`).
+
+### Changed
+
+- Changed the routing UI to remove the shared "Найти локальные модели" button; the legacy
+  admin `GET /api/models` endpoint remains available for the single-provider panel.
+- Changed OpenAI-compatible model listing so a request without a configured API key is sent
+  without an `Authorization` header instead of failing, letting servers that allow
+  unauthenticated discovery respond.
+
 ## [1.2.0] - 2026-08-15
 
 ### Added

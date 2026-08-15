@@ -81,18 +81,36 @@ class OpenAICompatibleProvider:
             headers["X-Title"] = title
         return headers
 
-    def _client(self) -> httpx.Client:
-        timeout = httpx.Timeout(
+    def _timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(
             self.settings.llm_timeout_seconds,
             connect=self.settings.llm_connect_timeout_seconds,
             read=self.settings.llm_read_timeout_seconds,
         )
-        return httpx.Client(timeout=timeout, transport=self.transport, headers=self._headers())
+
+    def _client(self) -> httpx.Client:
+        return httpx.Client(
+            timeout=self._timeout(), transport=self.transport, headers=self._headers()
+        )
+
+    def _models_endpoint(self) -> str:
+        """Return the standard ``GET /v1/models`` endpoint for this base URL."""
+        base = self.base_url
+        if not base.endswith("/v1"):
+            base = f"{base}/v1"
+        return f"{base}/models"
 
     def list_models(self) -> list[str]:
+        # Discovery may run without a configured key: some OpenAI-compatible
+        # servers expose /v1/models without authentication. When a key is
+        # present it is sent as a Bearer token; otherwise no Authorization
+        # header is added and the server decides.
+        headers = self._headers() if self.api_key else {}
         try:
-            with self._client() as client:
-                response = client.get(f"{self.base_url}/models")
+            with httpx.Client(
+                timeout=self._timeout(), transport=self.transport, headers=headers
+            ) as client:
+                response = client.get(self._models_endpoint())
                 response.raise_for_status()
                 payload = response.json()
         except httpx.HTTPStatusError as error:

@@ -86,14 +86,50 @@ def test_legacy_provider_panel_is_hidden_for_full_router_modes() -> None:
     assert "$('routeMode').value=data.mode;syncLegacySettings()" in INDEX_HTML
 
 
-def test_routing_ui_discovers_models_without_inserting_html() -> None:
+def test_routing_ui_discovers_models_per_tier_without_inserting_html() -> None:
     assert '<select id="${name}Model"></select>' in INDEX_HTML
+    assert 'data-find-models="${name}"' in INDEX_HTML
+    assert "Найти модели" in INDEX_HTML
+    assert "discoverRouting" not in INDEX_HTML
+    assert "Найти локальные модели" not in INDEX_HTML
     assert 'id="routingModels"' not in INDEX_HTML
+    assert "async function findModels(name)" in INDEX_HTML
+    assert "'/api/v2/discover-models'" in INDEX_HTML
     assert "select.replaceChildren()" in INDEX_HTML
     assert "const option=document.createElement('option')" in INDEX_HTML
-    assert "option.value=name" in INDEX_HTML
-    assert "option.textContent=name" in INDEX_HTML
-    assert "setTierModel(tier,current)" in INDEX_HTML
+    assert "option.value=model" in INDEX_HTML
+    assert "option.textContent=model" in INDEX_HTML
+    assert "setTierModel(name,current)" in INDEX_HTML
+
+
+def test_routing_ui_find_models_uses_only_its_own_card_settings() -> None:
+    assert (
+        "tier:name,provider:$(name+'Provider').value,base_url:baseUrl,"
+        "api_key:$(name+'Key').value||null" in INDEX_HTML
+    )
+
+
+def test_routing_ui_has_independent_loading_and_results_per_tier() -> None:
+    assert "tierFindLoading={local:false,mid:false,strong:false}" in INDEX_HTML
+    assert "tierModelLists={local:[],mid:[],strong:[]}" in INDEX_HTML
+    assert "if(tierFindLoading[name])return" in INDEX_HTML
+    assert "tierModelLists[name]=models" in INDEX_HTML
+    assert "tierFindLoading[name]=true" in INDEX_HTML
+    assert "tierFindLoading[name]=false" in INDEX_HTML
+
+
+def test_routing_ui_requires_base_url_before_search() -> None:
+    assert "if(!baseUrl){statusNode.textContent='Укажите Base URL'" in INDEX_HTML
+
+
+def test_routing_ui_preserves_current_model_after_search() -> None:
+    assert "const select=$(name+'Model'),current=select.value" in INDEX_HTML
+    assert "setTierModel(name,current)" in INDEX_HTML
+
+
+def test_routing_ui_keeps_save_routing_button() -> None:
+    assert 'id="saveRouting"' in INDEX_HTML
+    assert "$('saveRouting').onclick=saveRouting" in INDEX_HTML
 
 
 def test_routing_dashboard_renders_status_metrics() -> None:

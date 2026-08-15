@@ -12,11 +12,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
 from dotenv import dotenv_values
 from pydantic import SecretStr, ValidationError
 
 from .config import WorkerSettings
-from .exceptions import ProviderError, WorkerError
+from .exceptions import ProviderConfigurationError, ProviderError, WorkerError
 from .inference_queue import InferenceLease, InferenceQueue
 from .models import JsonMode, ProviderName
 from .providers import create_provider
@@ -58,8 +59,9 @@ from .usage_statistics import (
     summarize_routing,
     summarize_v2_statistics,
 )
-from .virtual_models import VIRTUAL_MODEL_REGISTRY
+from .virtual_models import VIRTUAL_MODEL_REGISTRY, ModelTier
 from .web_config import (
+    TIER_API_KEY_ENV,
     initialize_container_settings,
     load_gateway_routing_settings,
     load_public_settings,
@@ -68,7 +70,12 @@ from .web_config import (
     save_gateway_settings,
     save_provider_settings,
 )
-from .web_models import GatewaySettingsInput, ProviderSettingsInput, validate_model_name
+from .web_models import (
+    GatewaySettingsInput,
+    ProviderSettingsInput,
+    TierModelDiscoveryInput,
+    validate_model_name,
+)
 
 INFERENCE_QUEUE = InferenceQueue()
 
@@ -128,6 +135,66 @@ def _summarize_tools(tools: list[object]) -> list[dict[str, object]]:
     return out
 
 
+def _resolve_tier_stored_key(tier: ModelTier, env_path: Path) -> str | None:
+    """Resolve the API key stored for one routing tier (env var or .env file)."""
+    env_name = TIER_API_KEY_ENV[tier]
+    raw = os.environ.get(env_name)
+    if raw is None:
+        raw = dotenv_values(env_path).get(env_name)
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    return value or None
+
+
+def discover_tier_models(
+    provider: ProviderName,
+    base_url: Any,
+    api_key: str | None,
+    env_path: Path,
+    transport: httpx.BaseTransport | None = None,
+) -> list[str]:
+    """Discover models for one routing tier using only that tier's settings.
+
+    The request goes only to the given provider/base_url. ``api_key`` is the key
+    typed in the card; when it is absent no key is used (neither the key of
+    another tier nor unrelated environment credentials).
+    """
+    settings = WorkerSettings(
+        _env_file=env_path,
+        llm_provider=provider,
+        llm_base_url=base_url,
+        llm_model="",
+        llm_api_key=SecretStr(api_key) if api_key else None,
+        llm_api_key_env="",
+    )
+    return create_provider(settings, transport).list_models()
+
+
+def _discovery_error_message(error: Exception) -> str:
+    """Map provider discovery failures to short, user-facing messages."""
+    if isinstance(error, ProviderConfigurationError):
+        return "Для этого провайдера автоматический поиск моделей не поддерживается."
+    if isinstance(error, ProviderError):
+        category = error.category
+        if category == "connection":
+            return "Не удалось подключиться к серверу моделей"
+        if category == "timeout":
+            return "Таймаут подключения: сервер моделей не ответил"
+        if category == "transport_error":
+            return "Ошибка сети: не удалось связаться с сервером моделей"
+        if category in {"http_401", "http_403"}:
+            return "Ошибка авторизации: проверьте API-ключ"
+        if category == "http_404":
+            return "Endpoint получения моделей не найден (HTTP 404)"
+        if category.startswith("http_"):
+            return f"Не удалось получить список моделей (HTTP {category[5:]})"
+        if category in {"invalid_json", "models_unsupported"}:
+            return "Модели не найдены или сервер вернул некорректный ответ"
+        return str(error)
+    return "Не удалось получить список моделей"
+
+
 class RequestBodyTooLarge(ValueError):
     def __init__(self, *, max_bytes: int, received_bytes: int) -> None:
         super().__init__("Request body exceeds maximum allowed size")
@@ -146,14 +213,14 @@ label{display:block;color:var(--muted);font-size:13px;margin-bottom:6px}input,se
 .tiers{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.tier{padding:16px;border:1px solid var(--line);border-radius:14px;background:#0d1428}.tier h3{margin:0 0 2px}.tier p{font-size:12px;margin:0 0 12px}.tier label{margin-top:9px}.check{display:flex;align-items:center;gap:8px}.check input{width:auto}.route-head{display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;margin-bottom:16px}@media(max-width:850px){.tiers{grid-template-columns:1fr}.route-head{grid-template-columns:1fr}}
 .table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px}.usage-table{width:100%;border-collapse:collapse;min-width:760px}.usage-table th,.usage-table td{padding:11px 12px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}.usage-table th{color:var(--muted);font-size:12px;font-weight:650;background:#0d1428}.usage-table th:first-child,.usage-table td:first-child{text-align:left}.usage-table tbody tr:last-child td{border-bottom:0}.usage-table tbody tr:hover{background:#18213a}.model-cell{font-weight:650;color:#b9c8ff}.provider-cell{color:var(--muted);font-size:12px}
 </style></head><body><main><div class="hero"><div><h1>Local Code Worker</h1><p>Провайдеры, ключи и локальные модели — в одном локальном интерфейсе.</p></div><span class="pill" id="health">проверка…</span></div>
-<section class="card" id="routingSettings"><h2 style="margin-top:0">Маршрутизация моделей</h2><p>Запрос начинается с локальных уровней. STRONG используйте как облачную страховку, если локальные модели не справились.</p><div class="route-head"><div><label for="routeMode">Режим</label><select id="routeMode"><option value="router">Router — применять выбор</option><option value="route_llm">RouteLLM policy</option><option value="shadow">Shadow — только сравнивать</option><option value="canary">Canary — стабильная выборка</option><option value="observe_only">Observe only — совместимость</option><option value="legacy">Legacy — одна модель ниже</option></select></div><div class="check"><input id="routeLlm" type="checkbox"><label for="routeLlm">RouteLLM</label></div><div><label for="routeThreshold">Старый порог RouteLLM</label><input id="routeThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="localThreshold">LOCAL threshold</label><input id="localThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="strongThreshold">STRONG threshold</label><input id="strongThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="canaryPercent">Canary, %</label><input id="canaryPercent" type="number" min="0" max="100" step="1"></div><div><label for="maxEscalations">Максимум эскалаций</label><input id="maxEscalations" type="number" min="0" max="10" step="1"></div></div><div class="tiers" id="tierCards"></div><div class="actions"><button id="saveRouting">Сохранить маршрутизацию</button><button class="secondary" id="discoverRouting">Найти локальные модели</button></div><div class="status" id="routingStatus"></div></section>
+<section class="card" id="routingSettings"><h2 style="margin-top:0">Маршрутизация моделей</h2><p>Запрос начинается с локальных уровней. STRONG используйте как облачную страховку, если локальные модели не справились.</p><div class="route-head"><div><label for="routeMode">Режим</label><select id="routeMode"><option value="router">Router — применять выбор</option><option value="route_llm">RouteLLM policy</option><option value="shadow">Shadow — только сравнивать</option><option value="canary">Canary — стабильная выборка</option><option value="observe_only">Observe only — совместимость</option><option value="legacy">Legacy — одна модель ниже</option></select></div><div class="check"><input id="routeLlm" type="checkbox"><label for="routeLlm">RouteLLM</label></div><div><label for="routeThreshold">Старый порог RouteLLM</label><input id="routeThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="localThreshold">LOCAL threshold</label><input id="localThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="strongThreshold">STRONG threshold</label><input id="strongThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="canaryPercent">Canary, %</label><input id="canaryPercent" type="number" min="0" max="100" step="1"></div><div><label for="maxEscalations">Максимум эскалаций</label><input id="maxEscalations" type="number" min="0" max="10" step="1"></div></div><div class="tiers" id="tierCards"></div><div class="actions"><button id="saveRouting">Сохранить маршрутизацию</button></div><div class="status" id="routingStatus"></div></section>
 <section class="card"><div class="grid"><div><label for="provider">Провайдер</label><select id="provider"><option value="ollama">Ollama (локально)</option><option value="openai-compatible">OpenAI-compatible API</option></select></div><div><label for="baseUrl">Base URL</label><input id="baseUrl"></div><div><label for="model">Модель</label><select id="model"></select></div><div><label for="contextLength">Контекст (токены)</label><input id="contextLength" type="number" min="512" max="131072" step="512"></div><div id="pullBlock"><label for="pullModel">Имя модели для скачивания (необязательно)</label><input id="pullModel" placeholder="qwen2.5-coder:7b-instruct-q5_K_M"></div><div id="keyBlock"><label for="apiKey">API-ключ (пусто = сохранить текущий)</label><div class="keyrow"><input id="apiKey" type="password" autocomplete="new-password" placeholder="••••••••"><button class="secondary" id="clearKey" type="button">Удалить</button></div></div></div>
 <div class="actions"><button id="save">Сохранить и проверить</button><button class="secondary" id="refresh">Обновить модели</button><button class="secondary" id="pull">Скачать модель</button></div><div class="status" id="status"></div><textarea id="progress" readonly placeholder="Прогресс загрузки Ollama…"></textarea></section><section class="card" style="margin-top:18px"><h2 style="margin:0">Память модели</h2><p>Выгрузка модели из VRAM при простое запросов.</p><div class="grid"><div><label for="unloadPolicy">Выгрузка модели при простое</label><select id="unloadPolicy"><option value="immediate">Сразу (по умолчанию)</option><option value="5">5 мин</option><option value="10">10 мин</option><option value="30">30 мин</option><option value="never">Никогда</option></select></div></div><div class="actions"><button id="saveUnload">Сохранить</button></div><div class="status" id="unloadStatus"></div></section><section class="card" style="margin-top:18px"><div class="hero" style="margin-bottom:12px"><div><h2 style="margin:0">Мониторинг системы и моделей</h2><p style="margin:4px 0 0">Обновляется каждые 15 секунд.</p></div><span class="pill" id="runtimeUpdated">проверка…</span></div><div class="grid" id="metrics"></div><div class="status" id="runtime">Проверка состояния Ollama…</div></section><section class="card" style="margin-top:18px"><h2 style="margin:0">Маршрутизация</h2><p>Распределение, эскалации, latency и экономия cloud tokens.</p><div class="grid" id="routerMetrics"></div></section><section class="card" style="margin-top:18px"><div class="hero" style="margin-bottom:12px"><div><h2 style="margin:0">Статистика обращений</h2><p style="margin:4px 0 0">Накопительные данные; API-вызовы и legacy proposal учитываются раздельно.</p></div><span class="pill" id="usageUpdated">проверка…</span></div><div class="table-wrap"><table class="usage-table"><thead><tr><th>Модель</th><th>Запросы</th><th>Входные</th><th>Выходные</th><th>Ток/с</th><th>API успешно</th><th>API с ошибкой</th><th>Proposal валиден</th><th>Proposal невалиден</th></tr></thead><tbody id="usageStats"></tbody></table></div></section></main>
 <script>
 const $=id=>document.getElementById(id), provider=$('provider'), baseUrl=$('baseUrl'), model=$('model'), contextLength=$('contextLength'), pullModel=$('pullModel'), apiKey=$('apiKey'), status=$('status'), progress=$('progress'), runtime=$('runtime'), runtimeUpdated=$('runtimeUpdated'), metrics=$('metrics'), routerMetrics=$('routerMetrics'), usageStats=$('usageStats');unloadPolicy=$('unloadPolicy');let clearKey=false;
-const tierNames=['local','mid','strong'],tierLabels={local:'LOCAL',mid:'MID',strong:'STRONG'},tierHelp={local:'Первая локальная модель: быстрые и простые задачи.',mid:'Локальная модель для рассуждений и сложного исполнения.',strong:'Последний уровень; здесь можно указать облачную модель.'},clearedTierKeys=new Set();
+const tierNames=['local','mid','strong'],tierLabels={local:'LOCAL',mid:'MID',strong:'STRONG'},tierHelp={local:'Первая локальная модель: быстрые и простые задачи.',mid:'Локальная модель для рассуждений и сложного исполнения.',strong:'Последний уровень; здесь можно указать облачную модель.'},clearedTierKeys=new Set();const tierFindLoading={local:false,mid:false,strong:false},tierModelLists={local:[],mid:[],strong:[]};
 function routingMessage(text,ok=true){const node=$('routingStatus');node.textContent=text;node.className='status '+(ok?'ok':'bad')}
-function tierCard(name){const card=document.createElement('div');card.className='tier';card.dataset.tier=name;card.innerHTML=`<h3>${tierLabels[name]}</h3><p>${tierHelp[name]}</p><div class="check"><input id="${name}Enabled" type="checkbox"><label for="${name}Enabled">Уровень включён</label></div><label for="${name}Provider">Провайдер</label><select id="${name}Provider"><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI-compatible</option></select><label for="${name}BaseUrl">Base URL</label><input id="${name}BaseUrl"><label for="${name}Model">Модель</label><select id="${name}Model"></select><label for="${name}Context">Контекст</label><input id="${name}Context" type="number" min="512" max="131072" step="512"><label for="${name}Key">API-ключ (пусто = оставить)</label><div class="keyrow"><input id="${name}Key" type="password" autocomplete="new-password"><button class="secondary" type="button" data-clear-key="${name}">×</button></div><small id="${name}KeyState"></small>`;return card}
+function tierCard(name){const card=document.createElement('div');card.className='tier';card.dataset.tier=name;card.innerHTML=`<h3>${tierLabels[name]}</h3><p>${tierHelp[name]}</p><div class="check"><input id="${name}Enabled" type="checkbox"><label for="${name}Enabled">Уровень включён</label></div><label for="${name}Provider">Провайдер</label><select id="${name}Provider"><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI-compatible</option></select><label for="${name}BaseUrl">Base URL</label><input id="${name}BaseUrl"><label for="${name}Model">Модель</label><select id="${name}Model"></select><button class="secondary" type="button" data-find-models="${name}">Найти модели</button><small id="${name}FindStatus"></small><label for="${name}Context">Контекст</label><input id="${name}Context" type="number" min="512" max="131072" step="512"><label for="${name}Key">API-ключ (пусто = оставить)</label><div class="keyrow"><input id="${name}Key" type="password" autocomplete="new-password"><button class="secondary" type="button" data-clear-key="${name}">×</button></div><small id="${name}KeyState"></small>`;return card}
 for(const name of tierNames)$('tierCards').appendChild(tierCard(name));
 const legacySettings=provider.closest('section.card'),legacyModes=new Set(['legacy','observe_only','shadow','canary']);
 function syncLegacySettings(){legacySettings.hidden=!legacyModes.has($('routeMode').value)}
@@ -162,9 +229,9 @@ $('routeMode').addEventListener('change',syncLegacySettings);
 function setTierModel(name,value){const select=$(name+'Model');if(value&&![...select.options].some(option=>option.value===value)){const option=document.createElement('option');option.value=value;option.textContent=value;select.appendChild(option)}select.value=value||''}
 function fillTier(name,data){$(name+'Enabled').checked=data.enabled;$(name+'Provider').value=data.provider;$(name+'BaseUrl').value=data.base_url||'';setTierModel(name,data.model);$(name+'Context').value=data.context_length||32768;$(name+'Key').value='';$(name+'KeyState').textContent=data.api_key_configured?'Ключ сохранён':'Ключ не задан'}
 function tierPayload(name){const key=$(name+'Key').value,clear=clearedTierKeys.has(name),action=clear?'clear':key?'replace':'keep';return {enabled:$(name+'Enabled').checked,provider:$(name+'Provider').value,base_url:$(name+'BaseUrl').value,model:$(name+'Model').value,context_length:Number($(name+'Context').value),api_key_action:action,api_key:action==='replace'?key:null}}
-async function loadRouting(){try{const data=await jsonFetch('/api/v2/settings');$('routeMode').value=data.mode;syncLegacySettings();$('routeLlm').checked=data.routellm_enabled;$('routeThreshold').value=data.routellm_threshold;$('localThreshold').value=data.local_threshold;$('strongThreshold').value=data.strong_threshold;$('canaryPercent').value=data.canary_percent;$('maxEscalations').value=data.max_escalations_per_lease;for(const name of tierNames)fillTier(name,data.tiers[name]);await discoverRouting(false);routingMessage('Маршрутизация загружена')}catch(e){routingMessage(e.message,false)}}
+async function loadRouting(){try{const data=await jsonFetch('/api/v2/settings');$('routeMode').value=data.mode;syncLegacySettings();$('routeLlm').checked=data.routellm_enabled;$('routeThreshold').value=data.routellm_threshold;$('localThreshold').value=data.local_threshold;$('strongThreshold').value=data.strong_threshold;$('canaryPercent').value=data.canary_percent;$('maxEscalations').value=data.max_escalations_per_lease;for(const name of tierNames)fillTier(name,data.tiers[name]);routingMessage('Маршрутизация загружена')}catch(e){routingMessage(e.message,false)}}
 async function saveRouting(){try{const tiers=Object.fromEntries(tierNames.map(name=>[name,tierPayload(name)])),data=await jsonFetch('/api/v2/settings',{method:'PUT',body:JSON.stringify({mode:$('routeMode').value,tiers,routellm_enabled:$('routeLlm').checked,routellm_threshold:Number($('routeThreshold').value),local_threshold:Number($('localThreshold').value),strong_threshold:Number($('strongThreshold').value),canary_percent:Number($('canaryPercent').value),max_escalations_per_lease:Number($('maxEscalations').value)})});clearedTierKeys.clear();for(const name of tierNames)fillTier(name,data.tiers[name]);routingMessage('Маршрутизация сохранена',true)}catch(e){routingMessage(e.message,false)}}
-async function discoverRouting(announce=true){try{const data=await jsonFetch('/api/models'),models=[...new Set(data.models.filter(name=>typeof name==='string'&&name.trim()).map(name=>name.trim()))];for(const tier of tierNames){const select=$(tier+'Model'),current=select.value;select.replaceChildren();for(const name of models){const option=document.createElement('option');option.value=name;option.textContent=name;select.appendChild(option)}setTierModel(tier,current)}if(announce)routingMessage(`Найдено локальных моделей: ${models.length}`)}catch(e){if(announce)routingMessage(e.message,false)}}
+async function findModels(name){if(tierFindLoading[name])return;const button=$(name+'FindModels'),statusNode=$(name+'FindStatus'),baseUrl=$(name+'BaseUrl').value.trim();if(!baseUrl){statusNode.textContent='Укажите Base URL';statusNode.className='bad';return}statusNode.textContent='';statusNode.className='';button.disabled=true;button.textContent='Поиск…';tierFindLoading[name]=true;try{const data=await jsonFetch('/api/v2/discover-models',{method:'POST',body:JSON.stringify({tier:name,provider:$(name+'Provider').value,base_url:baseUrl,api_key:$(name+'Key').value||null})});const models=[...new Set((Array.isArray(data.models)?data.models:[]).filter(model=>typeof model==='string'&&model.trim()).map(model=>model.trim()))];tierModelLists[name]=models;const select=$(name+'Model'),current=select.value;select.replaceChildren();for(const model of models){const option=document.createElement('option');option.value=model;option.textContent=model;select.appendChild(option)}setTierModel(name,current);statusNode.textContent=`Найдено моделей: ${models.length}`;statusNode.className='ok'}catch(e){statusNode.textContent=e.message;statusNode.className='bad'}finally{button.disabled=false;button.textContent='Найти модели';tierFindLoading[name]=false}}
 function message(text,ok=true){status.textContent=text;status.className='status '+(ok?'ok':'bad')}
 function sync(){const local=provider.value==='ollama';$('keyBlock').style.display=local?'none':'block';$('pullBlock').style.display=local?'block':'none';$('pull').disabled=!local;if(local&&(!baseUrl.value||baseUrl.value.includes('example')))baseUrl.value='http://localhost:11434'}
 async function jsonFetch(url,options={}){const response=await fetch(url,{headers:{'Content-Type':'application/json'},...options});const data=await response.json();if(!response.ok)throw new Error(data.error||response.statusText);return data}
@@ -179,7 +246,7 @@ async function load(){try{const data=await jsonFetch('/api/settings');provider.v
 async function save(){try{const action=clearKey?'clear':apiKey.value?'replace':'keep';const data=await jsonFetch('/api/settings',{method:'PUT',body:JSON.stringify({provider:provider.value,base_url:baseUrl.value,model:model.value,context_length:Number(contextLength.value),api_key_action:action,api_key:action==='replace'?apiKey.value:null})});apiKey.value='';clearKey=false;message('Настройки сохранены. Выгрузите модель через ollama stop, чтобы применить новый контекст.',true);$('health').textContent=data.api_key_configured?'ключ сохранён':'готово'}catch(e){message(e.message,false)}}
 async function models(preferredModel=model.value){preferredModel=typeof preferredModel==='string'?preferredModel:'';try{const data=await jsonFetch('/api/models');const names=[...new Set((Array.isArray(data.models)?data.models:[]).filter(name=>typeof name==='string'&&name.trim()).map(name=>name.trim()))];if(preferredModel&&!names.includes(preferredModel))names.unshift(preferredModel);model.replaceChildren();for(const name of names){const option=document.createElement('option');option.value=name;option.textContent=name;model.appendChild(option)}if(preferredModel)model.value=preferredModel;message(`Найдено моделей: ${data.models.length}`)}catch(e){message(e.message,false)}}
 async function pull(){progress.value='';message('Загрузка модели…');const requestedModel=pullModel.value.trim()||model.value;try{const response=await fetch('/api/ollama/pull',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:requestedModel})});if(!response.ok){const d=await response.json();throw new Error(d.error)}const reader=response.body.getReader(),decoder=new TextDecoder();let pending='';while(true){const {value,done}=await reader.read();pending+=decoder.decode(value||new Uint8Array(),{stream:!done});const lines=pending.split('\n');pending=lines.pop();for(const line of lines)if(line){const item=JSON.parse(line);progress.value+=JSON.stringify(item)+'\n';progress.scrollTop=progress.scrollHeight}if(done)break}pullModel.value='';await models(requestedModel);message('Модель установлена',true)}catch(e){message(e.message,false)}}
-async function saveUnloadPolicy(){try{await jsonFetch('/api/unload-policy',{method:'PUT',body:JSON.stringify({policy:unloadPolicy.value})})}catch(e){console.error('Unload policy save failed:',e)}}async function loadUnloadPolicy(){try{const d=await jsonFetch('/api/unload-policy');unloadPolicy.value=d.policy}catch(e){console.error('Unload policy load failed:',e)}}provider.addEventListener('change',sync);$('save').onclick=save;$('saveUnload').onclick=async()=>{await saveUnloadPolicy();$('unloadStatus').textContent='Сохранено';$('unloadStatus').className='status ok'};$('refresh').onclick=()=>models();$('pull').onclick=pull;$('clearKey').onclick=()=>{clearKey=true;apiKey.value='';message('Ключ будет удалён после сохранения')};$('saveRouting').onclick=saveRouting;$('discoverRouting').onclick=discoverRouting;$('tierCards').onclick=event=>{const name=event.target.dataset.clearKey;if(name){clearedTierKeys.add(name);$(name+'Key').value='';$(name+'KeyState').textContent='Ключ будет удалён после сохранения'}};load();loadRouting();loadUnloadPolicy();window.setInterval(runtimeStatus,15000);
+async function saveUnloadPolicy(){try{await jsonFetch('/api/unload-policy',{method:'PUT',body:JSON.stringify({policy:unloadPolicy.value})})}catch(e){console.error('Unload policy save failed:',e)}}async function loadUnloadPolicy(){try{const d=await jsonFetch('/api/unload-policy');unloadPolicy.value=d.policy}catch(e){console.error('Unload policy load failed:',e)}}provider.addEventListener('change',sync);$('save').onclick=save;$('saveUnload').onclick=async()=>{await saveUnloadPolicy();$('unloadStatus').textContent='Сохранено';$('unloadStatus').className='status ok'};$('refresh').onclick=()=>models();$('pull').onclick=pull;$('clearKey').onclick=()=>{clearKey=true;apiKey.value='';message('Ключ будет удалён после сохранения')};$('saveRouting').onclick=saveRouting;$('tierCards').onclick=event=>{const name=event.target.dataset.clearKey;if(name){clearedTierKeys.add(name);$(name+'Key').value='';$(name+'KeyState').textContent='Ключ будет удалён после сохранения'}const find=event.target.dataset.findModels;if(find){findModels(find)}};load();loadRouting();loadUnloadPolicy();window.setInterval(runtimeStatus,15000);
 </script></body></html>"""
 
 
@@ -1377,6 +1444,29 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         response_started = False
         if not self._local_request():
             self._send_json(HTTPStatus.FORBIDDEN, {"error": "Local requests only"})
+            return
+        if self.path == "/api/v2/discover-models":
+            try:
+                body = self._read_json(max_bytes=REQUEST_LIMITS.max_ui_request_bytes)
+                value = TierModelDiscoveryInput.model_validate(body)
+                api_key = value.api_key.get_secret_value() if value.api_key else None
+                if api_key is None and value.tier is not None:
+                    # Fall back to the key stored for this tier only, never to
+                    # another tier's key or unrelated environment credentials.
+                    api_key = _resolve_tier_stored_key(value.tier, self.env_path)
+                models = discover_tier_models(
+                    value.provider, value.base_url, api_key, self.env_path
+                )
+                self._send_json(HTTPStatus.OK, {"models": models})
+            except RequestBodyTooLarge as error:
+                self._send_request_too_large(error)
+            except ValidationError:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST, {"error": "Неверный Base URL или параметры запроса"}
+                )
+            except (ProviderError, ProviderConfigurationError, WorkerError, ValueError, OSError) as error:
+                HTTP_LOGGER.info("model discovery failed: %s", error)
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": _discovery_error_message(error)})
             return
         if self.path == "/v1/chat/completions":
             try:

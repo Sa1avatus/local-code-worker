@@ -6,7 +6,7 @@ import pytest
 
 from local_code_worker.cli import create_parser, provider_check, settings_from_arguments
 from local_code_worker.config import WorkerSettings
-from local_code_worker.exceptions import ProviderConfigurationError, ProviderError
+from local_code_worker.exceptions import ProviderError
 from local_code_worker.models import JsonMode, ProviderName
 from local_code_worker.providers.base import (
     ProviderCapability,
@@ -461,17 +461,37 @@ def test_openai_key_loads_from_dotenv(
     assert provider.api_key_env == "DOTENV_LLM_KEY"
 
 
-def test_openai_missing_key_names_required_variable() -> None:
-    settings = openai_settings(
-        llm_api_key=None,
-        llm_api_key_env="MISSING_TEST_KEY",
+def test_openai_list_models_without_key_sends_no_authorization() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "Authorization" not in request.headers
+        assert request.url.path == "/v1/models"
+        return httpx.Response(200, json={"object": "list", "data": [{"id": "free-model"}]})
+
+    settings = openai_settings(llm_api_key=None, llm_api_key_env="MISSING_TEST_KEY")
+    provider = OpenAICompatibleProvider(settings, httpx.MockTransport(handler))
+    assert provider.list_models() == ["free-model"]
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected_path"),
+    [
+        ("https://example.test/v1", "/v1/models"),
+        ("https://example.test/v1/", "/v1/models"),
+        ("https://example.test", "/v1/models"),
+    ],
+)
+def test_openai_models_endpoint_normalizes_v1(
+    base_url: str, expected_path: str
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == expected_path
+        assert request.headers["Authorization"] == "Bearer secret-value"
+        return httpx.Response(200, json={"object": "list", "data": [{"id": "m1"}]})
+
+    provider = OpenAICompatibleProvider(
+        openai_settings(llm_base_url=base_url), httpx.MockTransport(handler)
     )
-    provider = OpenAICompatibleProvider(settings)
-    with pytest.raises(
-        ProviderConfigurationError,
-        match="Environment variable MISSING_TEST_KEY is not set",
-    ):
-        provider.list_models()
+    assert provider.list_models() == ["m1"]
 
 
 def test_openai_report_base_url_removes_query_and_userinfo() -> None:
