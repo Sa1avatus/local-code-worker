@@ -25,6 +25,15 @@ def _parse_bool(value: str | None, *, default: bool) -> bool:
     raise ValueError(f"Invalid boolean configuration value: {value}")
 
 
+def _parse_optional_int(value: str | None) -> int | None:
+    if value is None or not str(value).strip():
+        return None
+    parsed = int(str(value).strip())
+    if parsed < 1 or parsed > 64:
+        raise ValueError(f"num_parallel must be between 1 and 64, got {parsed}")
+    return parsed
+
+
 def load_gateway_routing_settings(
     env_path: Path = Path(".env"),
 ) -> GatewayRoutingSettings:
@@ -49,6 +58,7 @@ def load_gateway_routing_settings(
                 enabled=_parse_bool(enabled, default=True),
                 base_url=value(f"{prefix}_BASE_URL"),
                 context_length=int(value(f"{prefix}_CONTEXT_LENGTH") or "16384"),
+                num_parallel=_parse_optional_int(value(f"{prefix}_NUM_PARALLEL")),
                 api_key_env=value(f"{prefix}_API_KEY_ENV"),
             )
 
@@ -92,6 +102,7 @@ def public_gateway_settings(env_path: Path = Path(".env")) -> dict[str, object]:
             "base_url": str(config.base_url) if config.base_url else None,
             "model": config.model,
             "context_length": config.context_length,
+            "num_parallel": config.num_parallel,
             "api_key_configured": configured,
             "api_key_env": key_name,
         }
@@ -133,6 +144,10 @@ def save_gateway_settings(
         set_key(path, f"{prefix}_BASE_URL", str(config.base_url).rstrip("/"))
         set_key(path, f"{prefix}_MODEL", config.model)
         set_key(path, f"{prefix}_CONTEXT_LENGTH", str(config.context_length))
+        if config.num_parallel is not None:
+            set_key(path, f"{prefix}_NUM_PARALLEL", str(config.num_parallel))
+        else:
+            unset_key(path, f"{prefix}_NUM_PARALLEL")
         if config.api_key_action == "replace":
             assert config.api_key is not None
             set_key(path, f"{prefix}_API_KEY_ENV", key_name)

@@ -183,6 +183,7 @@ def test_save_gateway_settings_round_trips_three_tiers_without_exposing_secret(
                     "base_url": "http://localhost:11434",
                     "model": "local-executor",
                     "context_length": 32768,
+                    "num_parallel": 1,
                 },
                 "strong": {
                     "provider": "openai-compatible",
@@ -200,9 +201,42 @@ def test_save_gateway_settings_round_trips_three_tiers_without_exposing_secret(
 
     assert set(result["tiers"]) == {"local", "mid", "strong"}
     assert result["tiers"]["strong"]["api_key_configured"] is True
+    assert result["tiers"]["mid"]["num_parallel"] == 1
+    assert result["tiers"]["local"]["num_parallel"] is None
     assert secret not in str(result)
     assert secret not in str(public_gateway_settings(env_path))
     assert secret in env_path.read_text(encoding="utf-8")
+
+
+def test_gateway_settings_reject_invalid_num_parallel() -> None:
+    base = {
+        "mode": "router",
+        "tiers": {
+            "local": {
+                "provider": "ollama",
+                "base_url": "http://localhost:11434",
+                "model": "local",
+                "context_length": 16384,
+            },
+            "mid": {
+                "provider": "ollama",
+                "base_url": "http://localhost:11434",
+                "model": "mid",
+                "context_length": 16384,
+            },
+            "strong": {
+                "provider": "openai-compatible",
+                "base_url": "https://cloud.example/v1",
+                "model": "strong",
+                "context_length": 16384,
+            },
+        },
+    }
+    for invalid in (0, 65, -1):
+        tiers = dict(base["tiers"])
+        tiers["local"] = {**tiers["local"], "num_parallel": invalid}
+        with pytest.raises(ValidationError):
+            GatewaySettingsInput.model_validate({**base, "tiers": tiers})
 
 
 def test_gateway_settings_require_all_three_tiers() -> None:

@@ -11,6 +11,10 @@ is now maintained in [`CHANGELOG.md`](CHANGELOG.md).
   button inside each LOCAL/MID/STRONG card. Every search uses only that card's provider, Base
   URL, and API key (the key typed in the card, or the key stored for that tier), and loading
   state, results, and error messages stay independent per tier.
+- Added a per-tier "Параллелизм (слотов)" field. The gateway passes `num_parallel` to Ollama per
+  request; on Ollama 0.32.x the option is only honored server-side via `OLLAMA_NUM_PARALLEL`, so
+  a tier using a large model with a long context should point at an instance with
+  `OLLAMA_NUM_PARALLEL=1` (the runner context is `num_ctx * num_parallel`).
 - Ollama discovery uses `GET {base_url}/api/tags`; OpenAI-compatible discovery uses
   `GET {base_url}/v1/models` with Base URL normalization so a missing `/v1` suffix is added
   exactly once. Requests without an API key are sent without an `Authorization` header.

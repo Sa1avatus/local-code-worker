@@ -131,6 +131,57 @@ def test_router_applies_complete_cross_provider_tier_configuration() -> None:
     assert selected.llm_api_key_env == "STRONG_API_KEY"
 
 
+def test_gateway_applies_tier_num_parallel() -> None:
+    worker = worker_settings()
+    routing = GatewayRoutingSettings(
+        mode=RoutingMode.ROUTER,
+        tiers={
+            ModelTier.MID: TierConfig(
+                provider=ProviderName.OLLAMA,
+                base_url="http://localhost:11435",
+                model="gemma4:12b",
+                context_length=64_000,
+                num_parallel=1,
+            )
+        },
+    )
+
+    selected, _ = resolve_gateway_route(
+        request(),
+        "local-code-worker/mid",
+        worker,
+        routing,
+    )
+
+    assert selected.llm_model == "gemma4:12b"
+    assert selected.llm_num_ctx == 64_000
+    assert selected.llm_num_parallel == 1
+
+
+def test_gateway_leaves_num_parallel_default_when_unset() -> None:
+    worker = worker_settings()
+    routing = GatewayRoutingSettings(
+        mode=RoutingMode.ROUTER,
+        tiers={
+            ModelTier.LOCAL: TierConfig(
+                provider=ProviderName.OLLAMA,
+                base_url="http://localhost:11434",
+                model="qwen3.5:4b",
+                context_length=12_000,
+            )
+        },
+    )
+
+    selected, _ = resolve_gateway_route(
+        request(),
+        "local-code-worker/local",
+        worker,
+        routing,
+    )
+
+    assert selected.llm_num_parallel is None
+
+
 def test_gateway_uses_deterministic_route_when_routellm_backend_fails() -> None:
     worker = worker_settings()
     routing = GatewayRoutingSettings(

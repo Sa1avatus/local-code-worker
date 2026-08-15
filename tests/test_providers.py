@@ -278,6 +278,34 @@ def test_ollama_chat_omits_think_when_not_configured() -> None:
     assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
 
 
+def test_ollama_chat_sends_num_parallel_when_configured() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        options = json.loads(request.content)["options"]
+        assert options["num_parallel"] == 1
+        assert options["num_ctx"] == 4096
+        return httpx.Response(200, text='{"message":{"content":"ok"},"done":true}\n')
+
+    provider = OllamaProvider(
+        ollama_settings(llm_num_ctx=4096, llm_num_parallel=1),
+        httpx.MockTransport(handler),
+    )
+    assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
+
+
+def test_ollama_chat_omits_num_parallel_by_default() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Absent llm_num_parallel: the Ollama server's own OLLAMA_NUM_PARALLEL
+        # applies (matching relies on server-side parallel slots).
+        assert "num_parallel" not in json.loads(request.content)["options"]
+        return httpx.Response(200, text='{"message":{"content":"ok"},"done":true}\n')
+
+    provider = OllamaProvider(
+        ollama_settings(),
+        httpx.MockTransport(handler),
+    )
+    assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
+
+
 @pytest.mark.parametrize(
     ("json_mode", "category"),
     [

@@ -10,6 +10,11 @@ derived from project metadata and commit history.
 
 ### Added
 
+- Added a per-tier `num_parallel` setting for LOCAL/MID/STRONG routing tiers. The gateway sends
+  it to Ollama per request; because Ollama sizes the runner context as `num_ctx * num_parallel`,
+  large models (e.g. gemma4:12b at 64k) should use 1 slot while small matching models can keep
+  several. Ollama 0.32.x ignores the per-request option, so the setting is applied by pointing a
+  tier at an Ollama instance whose `OLLAMA_NUM_PARALLEL` matches.
 - Added per-tier model discovery in the routing UI: each LOCAL/MID/STRONG card has its own
   "Найти модели" button that queries only that card's provider, Base URL, and API key through the
   backend proxy (`POST /api/v2/discover-models`). Loading state and results are tracked
