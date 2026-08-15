@@ -25,9 +25,9 @@ class WorkerSettings(BaseSettings):
     llm_read_timeout_seconds: float | None = Field(default=None, gt=0)
     llm_num_ctx: int = Field(default=16_384, gt=0)
     # Parallel request slots for the Ollama runner. Ollama sizes the runner
-    # context as num_ctx * num_parallel, so large models need 1; None = the
-    # Ollama server's own OLLAMA_NUM_PARALLEL default.
-    llm_num_parallel: int | None = Field(default=None, gt=0)
+    # context as num_ctx * num_parallel, so large models need 1 (the default);
+    # small matching models can use several slots.
+    llm_num_parallel: int = Field(default=1, gt=0)
     llm_max_output_characters: int = Field(default=100_000, gt=0)
     llm_max_output_tokens: int = Field(default=4_096, gt=0)
     llm_temperature: float = Field(default=0, ge=0)

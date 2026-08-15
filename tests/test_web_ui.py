@@ -144,11 +144,8 @@ def test_routing_ui_keeps_save_routing_button() -> None:
 def test_routing_ui_has_per_tier_num_parallel_field() -> None:
     assert 'id="${name}Parallel" type="number" min="1" max="64"' in INDEX_HTML
     assert "Параллелизм (слотов)" in INDEX_HTML
-    assert "$(name+'Parallel').value=data.num_parallel||''" in INDEX_HTML
-    assert (
-        "num_parallel:$(name+'Parallel').value?Number($(name+'Parallel').value):null"
-        in INDEX_HTML
-    )
+    assert "$(name+'Parallel').value=data.num_parallel" in INDEX_HTML
+    assert "num_parallel:Number($(name+'Parallel').value)||1" in INDEX_HTML
 
 
 def test_routing_dashboard_renders_status_metrics() -> None:

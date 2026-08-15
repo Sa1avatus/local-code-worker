@@ -58,7 +58,7 @@ def load_gateway_routing_settings(
                 enabled=_parse_bool(enabled, default=True),
                 base_url=value(f"{prefix}_BASE_URL"),
                 context_length=int(value(f"{prefix}_CONTEXT_LENGTH") or "16384"),
-                num_parallel=_parse_optional_int(value(f"{prefix}_NUM_PARALLEL")),
+                num_parallel=_parse_optional_int(value(f"{prefix}_NUM_PARALLEL")) or 1,
                 api_key_env=value(f"{prefix}_API_KEY_ENV"),
             )
 
@@ -144,10 +144,7 @@ def save_gateway_settings(
         set_key(path, f"{prefix}_BASE_URL", str(config.base_url).rstrip("/"))
         set_key(path, f"{prefix}_MODEL", config.model)
         set_key(path, f"{prefix}_CONTEXT_LENGTH", str(config.context_length))
-        if config.num_parallel is not None:
-            set_key(path, f"{prefix}_NUM_PARALLEL", str(config.num_parallel))
-        else:
-            unset_key(path, f"{prefix}_NUM_PARALLEL")
+        set_key(path, f"{prefix}_NUM_PARALLEL", str(config.num_parallel))
         if config.api_key_action == "replace":
             assert config.api_key is not None
             set_key(path, f"{prefix}_API_KEY_ENV", key_name)

@@ -68,8 +68,8 @@ class TierConfig(StrictModel):
     context_length: int | None = Field(default=None, ge=512, le=131_072)
     # Parallel request slots for this tier's Ollama runner. Ollama sizes the
     # runner context as num_ctx * num_parallel, so large models need 1 while
-    # small matching models can use several slots. None = Ollama server default.
-    num_parallel: int | None = Field(default=None, ge=1, le=64)
+    # small matching models can use several slots. Default 1.
+    num_parallel: int = Field(default=1, ge=1, le=64)
     # Optional output budget for the routing capability check; defaults to a
     # generous ceiling so client budgets (e.g. matching extraction, 16k tokens)
     # are not rejected because the tier hardcoded a 4096-token capability.

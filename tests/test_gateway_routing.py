@@ -158,7 +158,7 @@ def test_gateway_applies_tier_num_parallel() -> None:
     assert selected.llm_num_parallel == 1
 
 
-def test_gateway_leaves_num_parallel_default_when_unset() -> None:
+def test_gateway_defaults_num_parallel_to_one() -> None:
     worker = worker_settings()
     routing = GatewayRoutingSettings(
         mode=RoutingMode.ROUTER,
@@ -179,7 +179,7 @@ def test_gateway_leaves_num_parallel_default_when_unset() -> None:
         routing,
     )
 
-    assert selected.llm_num_parallel is None
+    assert selected.llm_num_parallel == 1
 
 
 def test_gateway_uses_deterministic_route_when_routellm_backend_fails() -> None:

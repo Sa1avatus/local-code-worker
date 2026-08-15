@@ -202,7 +202,7 @@ def test_save_gateway_settings_round_trips_three_tiers_without_exposing_secret(
     assert set(result["tiers"]) == {"local", "mid", "strong"}
     assert result["tiers"]["strong"]["api_key_configured"] is True
     assert result["tiers"]["mid"]["num_parallel"] == 1
-    assert result["tiers"]["local"]["num_parallel"] is None
+    assert result["tiers"]["local"]["num_parallel"] == 1  # default
     assert secret not in str(result)
     assert secret not in str(public_gateway_settings(env_path))
     assert secret in env_path.read_text(encoding="utf-8")

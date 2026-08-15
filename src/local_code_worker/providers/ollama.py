@@ -489,9 +489,8 @@ class OllamaProvider:
         options: dict[str, object] = {
             "temperature": self.settings.llm_temperature,
             "num_ctx": self.settings.llm_num_ctx,
+            "num_parallel": self.settings.llm_num_parallel,
         }
-        if self.settings.llm_num_parallel is not None:
-            options["num_parallel"] = self.settings.llm_num_parallel
         if max_output_tokens is not None:
             options["num_predict"] = max_output_tokens
         request_body: dict[str, object] = {
