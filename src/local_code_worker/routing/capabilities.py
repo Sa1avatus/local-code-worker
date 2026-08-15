@@ -48,7 +48,7 @@ def configured_capabilities(tier: ModelTier, config: TierConfig) -> ModelCapabil
         supports_structured_output=provider.supports(ProviderCapability.JSON_OBJECT),
         supports_json_schema=provider.supports(ProviderCapability.JSON_SCHEMA),
         supports_streaming=provider.supports(ProviderCapability.STREAMING),
-        max_output_tokens=4096,
+        max_output_tokens=config.max_output_tokens or 32_768,
     )
 
 

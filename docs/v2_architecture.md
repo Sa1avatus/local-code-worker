@@ -663,11 +663,12 @@ PHASE 4 реализована как strict, additive Responses subset:
 
 - text/message input, instructions, reasoning, tools/tool choice и output limits schemas;
 - canonical request adapter и OpenAI-shaped response/output/usage models;
-- ordered text SSE lifecycle с `response.completed` и `response.failed`;
+- ordered text и function-call SSE lifecycle с `response.completed` и `response.failed`;
 - additive `POST /v1/responses` без изменения Chat Completions;
 - bounded process-local `previous_response_id` state с TTL/LRU и opt-in `store: true`;
-- non-stream function calls для Ollama и OpenAI-compatible provider formats;
-- явный отказ для multimodal input и streaming function tools вместо silent fallback.
+- non-stream и streaming function calls для Ollama и OpenAI-compatible provider formats;
+- hosted web-tool loops для streaming и non-streaming requests;
+- явный отказ для multimodal input вместо silent fallback.
 
 ## 28. Статус PHASE 5
 

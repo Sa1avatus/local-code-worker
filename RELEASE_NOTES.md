@@ -1,6 +1,9 @@
 # Release notes
 
-## Unreleased
+This file preserves the original release-note narrative. The canonical version-by-version history
+is now maintained in [`CHANGELOG.md`](CHANGELOG.md).
+
+## 1.2.0
 
 ### Model execution and observability
 
@@ -58,6 +61,7 @@
 ### Validation
 
 - `python -m ruff check src tests`
+- `python -m pytest tests -q` (`337 passed`)
 - `python -m pytest tests -q` (`129 passed` in the container)
 - `python -m pytest tests -q` (`122 passed` in the container after the documentation audit)
 - `python -m pytest tests -q` (`106 passed` in the container)

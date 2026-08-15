@@ -248,6 +248,36 @@ def test_ollama_explicit_json_schema_mode_sends_schema() -> None:
     assert provider.chat([], schema, 100, 32) == "{}"
 
 
+def test_ollama_chat_disables_thinking() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        # Reasoning models (qwen3.x) must not drain the token budget on
+        # thinking when the client asked for it.
+        assert payload["think"] is False
+        return httpx.Response(200, text='{"message":{"content":"ok"},"done":true}\n')
+
+    provider = OllamaProvider(
+        ollama_settings(llm_think=False),
+        httpx.MockTransport(handler),
+    )
+    assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
+
+
+def test_ollama_chat_omits_think_when_not_configured() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        # Absent llm_think: leave the model's default (thinking enabled) —
+        # the gateway also serves interactive clients that want reasoning.
+        assert "think" not in payload
+        return httpx.Response(200, text='{"message":{"content":"ok"},"done":true}\n')
+
+    provider = OllamaProvider(
+        ollama_settings(),
+        httpx.MockTransport(handler),
+    )
+    assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
+
+
 @pytest.mark.parametrize(
     ("json_mode", "category"),
     [

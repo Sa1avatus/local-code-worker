@@ -82,7 +82,15 @@ class ResponseTruncationConfig(StrictModel):
 
 class ResponseCreateRequest(StrictModel):
     model: str = Field(min_length=1)
-    input: str | list[ResponseInputMessage | ResponseAdditionalTools | ResponseInputFunctionCall | ResponseInputFunctionCallOutput]
+    input: (
+        str
+        | list[
+            ResponseInputMessage
+            | ResponseAdditionalTools
+            | ResponseInputFunctionCall
+            | ResponseInputFunctionCallOutput
+        ]
+    )
     instructions: str | None = None
     tools: list[ResponseFunctionTool | ResponseNamespaceTool | ResponseWebSearchTool] = Field(
         default_factory=list

@@ -2,7 +2,9 @@
 
 Local Code Worker exposes an OpenAI Responses-compatible loopback gateway at
 `http://127.0.0.1:8765/v1`. Codex remains the agent and owns filesystem, shell, approvals, and tool
-execution. The Worker only selects a configured model and proxies inference.
+execution. The Worker selects a configured model and proxies inference. It executes only hosted web
+tools explicitly declared by the client; ordinary function tools remain client-side passthrough
+calls and never grant the Worker filesystem or shell access.
 
 ## Compatibility profile
 
@@ -10,15 +12,16 @@ The gateway supports:
 
 - `GET /v1/models` with `local-code-worker/auto`, `local`, `mid`, and `strong`;
 - `POST /v1/responses` for text input and output;
-- ordered text SSE streaming;
-- non-streaming function tools;
+- ordered text and function-call SSE streaming;
+- non-streaming and streaming function tools;
+- bounded hosted `web_search` and function-style `web_fetch` tool loops;
 - bounded `previous_response_id` continuation;
-- legacy, observe-only, and router modes.
+- legacy, shadow, canary, RouteLLM, and compatibility routing modes.
 
-Streaming requests may carry function-tool declarations. Text SSE remains supported, while actual
-streamed function-call output is rejected explicitly as unsupported; non-streaming function calls
-remain supported. Multimodal input is rejected explicitly. A router tier that changes provider is
-also rejected until that provider has its own endpoint and credential configuration;
+Streaming passthrough calls emit output-item, function-argument, item-completion, and final-response
+events in order. Hosted web calls are executed by the Worker and returned to the model before the
+stream continues. Multimodal input remains unsupported and is rejected explicitly. A routed tier
+may change provider only when that tier has its own endpoint, credentials, and health configuration;
 the gateway never reuses credentials or a base URL for the wrong provider.
 
 The OpenAI model documentation identifies Responses as the API for current coding models and lists
@@ -65,8 +68,9 @@ Check model discovery without invoking a model:
 Invoke-RestMethod http://127.0.0.1:8765/v1/models
 ```
 
-Then run one small text request, one streaming request, and one non-streaming function-tool request.
-Use `local-code-worker/local` first so the test cannot select a cloud tier. Verify
+Then run one small text request, one streaming text request, one non-streaming function-tool request,
+and one streaming function-tool request. Use `local-code-worker/local` first so the test cannot
+select a cloud tier. Verify
 `GET /api/v2/statistics` and the SQLite routing decision after each request.
 
 Do not claim Codex Beta integration is complete until an installed Codex client has exercised the

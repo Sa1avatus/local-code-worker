@@ -65,7 +65,13 @@ def normalize_tool_dict(raw: dict[str, Any]) -> list[NormalizedTool]:
         # Check if this function tool is actually a hosted tool by name
         # (e.g. Codex CLI may send web_search as {"type":"function","name":"web_search"})
         func_name = raw.get("name", "unknown")
-        _HOSTED_NAMES = {"web_search", "web_fetch", "github_search", "docs_search", "local_rag_search"}
+        _HOSTED_NAMES = {
+            "web_search",
+            "web_fetch",
+            "github_search",
+            "docs_search",
+            "local_rag_search",
+        }
         if func_name in _HOSTED_NAMES:
             hosted_kind = _kind_from_type(func_name)
             return [
@@ -102,7 +108,9 @@ def normalize_tool_dict(raw: dict[str, Any]) -> list[NormalizedTool]:
     ]
 
 
-def normalize_typed_tool(tool: ResponseFunctionTool | ResponseNamespaceTool | ResponseWebSearchTool) -> list[NormalizedTool]:
+def normalize_typed_tool(
+    tool: ResponseFunctionTool | ResponseNamespaceTool | ResponseWebSearchTool,
+) -> list[NormalizedTool]:
     """Normalize a typed Responses schema tool object."""
     if isinstance(tool, ResponseFunctionTool):
         return [

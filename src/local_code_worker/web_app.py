@@ -21,7 +21,12 @@ from .inference_queue import InferenceLease, InferenceQueue
 from .models import JsonMode, ProviderName
 from .providers import create_provider
 from .providers.adapter import CanonicalProviderAdapter
-from .providers.base import ProviderFunctionCall, ProviderMessage, ProviderToolCallsEvent
+from .providers.base import (
+    ProviderFunctionCall,
+    ProviderMessage,
+    ProviderRequest,
+    ProviderToolCallsEvent,
+)
 from .providers.ollama import OllamaProvider
 from .request_limits import RequestLimits, load_request_limits
 from .responses.adapter import adapt_response_request
@@ -84,9 +89,7 @@ LOCAL_HOSTS = {
 }
 
 # --- Responses API tool debug logging ---
-_responses_debug = os.environ.get(
-    "LCW_DEBUG_RESPONSES_TOOLS", ""
-).lower() in ("1", "true", "yes")
+_responses_debug = os.environ.get("LCW_DEBUG_RESPONSES_TOOLS", "").lower() in ("1", "true", "yes")
 _responses_debug_log = logging.getLogger("local_code_worker.responses_tools")
 
 
@@ -335,7 +338,16 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             },
         )
 
-    def _chat_request(self) -> tuple[WorkerSettings, list[dict[str, str]], bool, str]:
+    def _chat_request(
+        self,
+    ) -> tuple[
+        WorkerSettings,
+        list[dict[str, str]],
+        bool,
+        str,
+        int | None,
+        dict[str, object] | None,
+    ]:
         payload = self._read_json(max_bytes=REQUEST_LIMITS.max_ui_request_bytes)
         raw_messages = payload.get("messages")
         if not isinstance(raw_messages, list) or not raw_messages:
@@ -370,34 +382,153 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             updates["llm_max_output_characters"] = min(
                 settings.llm_max_output_characters, max_tokens * 8
             )
-            updates["llm_max_output_tokens"] = min(settings.llm_max_output_tokens, max_tokens)
+            # Honor larger client budgets (e.g. matching extraction needs far
+            # more than the 4096-token default) up to a safety ceiling.
+            updates["llm_max_output_tokens"] = min(
+                max(settings.llm_max_output_tokens, max_tokens), 32_768
+            )
         response_format = payload.get("response_format")
+        response_schema: dict[str, object] | None = None
         if response_format is not None:
             if not isinstance(response_format, dict):
                 raise ValueError("response_format must be an object")
             response_type = response_format.get("type")
             if response_type == "json_object":
                 updates["llm_json_mode"] = JsonMode.JSON_OBJECT
+            elif response_type == "json_schema":
+                json_schema = response_format.get("json_schema")
+                if not isinstance(json_schema, dict):
+                    raise ValueError("json_schema response_format requires a json_schema object")
+                schema = json_schema.get("schema")
+                if not isinstance(schema, dict):
+                    raise ValueError("json_schema response_format requires a schema object")
+                updates["llm_json_mode"] = JsonMode.JSON_SCHEMA
+                response_schema = schema
             elif response_type not in {None, "text"}:
-                raise ValueError("only text and json_object response formats are supported")
+                raise ValueError(
+                    "only text, json_object and json_schema response formats are supported"
+                )
+        # Client-provided context override: wins over the routed tier's default
+        # (the routing decision is applied afterwards, so _chat_completion
+        # re-applies this value once the tier is known).
+        context_length = payload.get("context_length")
+        client_context_length: int | None = None
+        if context_length is not None:
+            if (
+                not isinstance(context_length, int)
+                or isinstance(context_length, bool)
+                or context_length <= 0
+            ):
+                raise ValueError("context_length must be a positive integer")
+            updates["llm_num_ctx"] = context_length
+            client_context_length = context_length
+        # Per-request "don't think" for reasoning models; absent = model default.
+        think = payload.get("think")
+        if think is not None:
+            if not isinstance(think, bool):
+                raise ValueError("think must be a boolean")
+            updates["llm_think"] = think
         stream = payload.get("stream", False)
         if not isinstance(stream, bool):
             raise ValueError("stream must be a boolean")
-        return settings.model_copy(update=updates), messages, stream, virtual_model.id
+        return (
+            settings.model_copy(update=updates),
+            messages,
+            stream,
+            virtual_model.id,
+            client_context_length,
+            response_schema,
+        )
 
     def _chat_completion(self, lease: InferenceLease) -> None:
-        settings, messages, stream, public_model = self._chat_request()
+        (
+            settings,
+            messages,
+            stream,
+            public_model,
+            client_context_length,
+            response_schema,
+        ) = self._chat_request()
+        provider_request = ProviderRequest(
+            messages=[ProviderMessage.model_validate(message) for message in messages],
+            response_schema=response_schema,
+            max_output_characters=settings.llm_max_output_characters,
+            max_output_tokens=settings.llm_max_output_tokens,
+            json_mode=settings.llm_json_mode,
+            stream=False,
+        )
+        routing_settings = load_gateway_routing_settings(self.env_path)
+        routellm_backend = (
+            ROUTELLM_BACKENDS.get(routing_settings.routellm_checkpoint_path)
+            if routing_settings.routellm_enabled
+            else None
+        )
+        settings, routing_plan = resolve_gateway_route(
+            provider_request,
+            public_model,
+            settings,
+            routing_settings,
+            routellm_backend,
+        )
+        if client_context_length is not None:
+            # The routed tier sets its own num_ctx; a client-provided
+            # context_length wins (matching passes its tuned budgets).
+            settings = settings.model_copy(update={"llm_num_ctx": client_context_length})
+        response_id = f"chat_{uuid.uuid4().hex}"
+        if routing_settings.mode is not RoutingMode.LEGACY:
+            route_lease = create_route_lease(response_id, routing_plan.actual)
+            record_route_lease(route_lease)
+            routing_plan = routing_plan.model_copy(
+                update={
+                    "actual": routing_plan.actual.model_copy(
+                        update={"lease_id": route_lease.lease_id}
+                    )
+                }
+            )
+        settings = self._settings_with_tier_secret(settings)
         provider = create_provider(settings)
         lease.model = settings.llm_model
-        lease.route = public_model
+        lease.route = routing_plan.actual.tier.value
         if isinstance(provider, OllamaProvider):
             lease.idle_cleanup = provider.unload_model
-        content = provider.chat(
-            messages,
-            None,
-            settings.llm_max_output_characters,
-            settings.llm_max_output_tokens,
-        )
+        try:
+            content = provider.chat(
+                messages,
+                response_schema,
+                settings.llm_max_output_characters,
+                settings.llm_max_output_tokens,
+            )
+        except (ProviderError, WorkerError, OSError):
+            record_model_call(
+                provider.last_generation_metadata,
+                kind="chat",
+                outcome="failed",
+                tier=routing_plan.actual.tier.value,
+            )
+            fallback = resolve_gateway_fallback(
+                settings,
+                routing_settings,
+                provider_request,
+                routing_plan.actual.tier,
+            )
+            if fallback is None:
+                record_routing_plan(response_id, routing_plan)
+                raise
+            settings, routing_plan = fallback
+            if client_context_length is not None:
+                settings = settings.model_copy(update={"llm_num_ctx": client_context_length})
+            settings = self._settings_with_tier_secret(settings)
+            provider = create_provider(settings)
+            lease.model = settings.llm_model
+            lease.route = routing_plan.actual.tier.value
+            if isinstance(provider, OllamaProvider):
+                lease.idle_cleanup = provider.unload_model
+            content = provider.chat(
+                messages,
+                response_schema,
+                settings.llm_max_output_characters,
+                settings.llm_max_output_tokens,
+            )
         metadata = provider.last_generation_metadata
         record_model_call(metadata, kind="chat", outcome="completed")
         completion_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -478,7 +609,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         tool_executor = ToolExecutor() if hosted_tool_names else None
 
         # Debug: log Codex request details
-        _td("codex_request",
+        _td(
+            "codex_request",
             request_id=request_id,
             model=request.model,
             stream=request.stream,
@@ -489,7 +621,10 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             parallel_tool_calls=request.parallel_tool_calls,
             previous_response_id=request.previous_response_id,
             has_instructions=request.instructions is not None,
-            input_types=[getattr(i, "type", "?") for i in (request.input if isinstance(request.input, list) else [])],
+            input_types=[
+                getattr(i, "type", "?")
+                for i in (request.input if isinstance(request.input, list) else [])
+            ],
             input_count=len(request.input) if isinstance(request.input, list) else 1,
             hosted_tool_names=list(hosted_tool_names),
             passthrough_tool_count=len([t for t in adapted.all_normalized if t.is_function]),
@@ -551,10 +686,14 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 while True:
                     try:
                         result = CanonicalProviderAdapter(provider).complete(provider_request)
-                        _td("model_result",
+                        _td(
+                            "model_result",
                             round=_tool_round,
                             content_len=len(result.content),
-                            function_calls=[{"name": fc.name, "call_id": fc.call_id} for fc in result.function_calls],
+                            function_calls=[
+                                {"name": fc.name, "call_id": fc.call_id}
+                                for fc in result.function_calls
+                            ],
                             finish_reason=result.finish_reason,
                         )
                         break
@@ -603,7 +742,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                         )
                 # Check for hosted tool calls
                 if not tool_executor or not result.function_calls:
-                    _td("tool_loop_break",
+                    _td(
+                        "tool_loop_break",
                         reason="no_executor_or_no_fc",
                         has_executor=tool_executor is not None,
                         fc_count=len(result.function_calls),
@@ -611,7 +751,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                     break
                 hosted_calls = [fc for fc in result.function_calls if fc.name in hosted_tool_names]
                 if not hosted_calls:
-                    _td("tool_loop_break",
+                    _td(
+                        "tool_loop_break",
                         reason="no_hosted_calls",
                         all_fc_names=[fc.name for fc in result.function_calls],
                         hosted_names=list(hosted_tool_names),
@@ -675,10 +816,13 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 escalation_count=route_lease.escalation_count if route_lease else 0,
                 tool_count=len(request.tools),
             )
-            _td("response_complete",
+            _td(
+                "response_complete",
                 response_id=response_id,
                 content_len=len(result.content),
-                function_calls=[{"name": fc.name, "call_id": fc.call_id} for fc in result.function_calls],
+                function_calls=[
+                    {"name": fc.name, "call_id": fc.call_id} for fc in result.function_calls
+                ],
             )
             self._send_json(
                 HTTPStatus.OK,
@@ -704,14 +848,16 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                             ProviderMessage(
                                 role="assistant",
                                 content=result.content or "",
-                                tool_calls=[{
-                                    "id": fc.call_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": fc.name,
-                                        "arguments": fc_args,
-                                    },
-                                }],
+                                tool_calls=[
+                                    {
+                                        "id": fc.call_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": fc.name,
+                                            "arguments": fc_args,
+                                        },
+                                    }
+                                ],
                             )
                         )
                 elif result.content:
@@ -866,8 +1012,11 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
 
                 # Emit passthrough function calls as SSE events for Codex
                 if passthrough_calls:
-                    _td("stream_passthrough_calls",
-                        calls=[{"name": fc.name, "call_id": fc.call_id} for fc in passthrough_calls],
+                    _td(
+                        "stream_passthrough_calls",
+                        calls=[
+                            {"name": fc.name, "call_id": fc.call_id} for fc in passthrough_calls
+                        ],
                     )
                     accumulated_stream_calls.extend(passthrough_calls)
                     # Emit each function call with full SSE lifecycle
@@ -881,34 +1030,46 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                         )
                         # output_item.added with in_progress status
                         last_sequence += 1
-                        self.wfile.write(encode_sse(ResponseStreamEvent(
-                            type="response.output_item.added",
-                            sequence_number=last_sequence,
-                            output_index=0,
-                            item=fc_item,
-                        )))
+                        self.wfile.write(
+                            encode_sse(
+                                ResponseStreamEvent(
+                                    type="response.output_item.added",
+                                    sequence_number=last_sequence,
+                                    output_index=0,
+                                    item=fc_item,
+                                )
+                            )
+                        )
                         self.wfile.flush()
                         # function_call_arguments.delta with full args
                         last_sequence += 1
-                        self.wfile.write(encode_sse(ResponseStreamEvent(
-                            type="response.function_call_arguments.delta",
-                            sequence_number=last_sequence,
-                            output_index=0,
-                            content_index=0,
-                            item_id=fc.call_id,
-                            delta=fc.arguments,
-                        )))
+                        self.wfile.write(
+                            encode_sse(
+                                ResponseStreamEvent(
+                                    type="response.function_call_arguments.delta",
+                                    sequence_number=last_sequence,
+                                    output_index=0,
+                                    content_index=0,
+                                    item_id=fc.call_id,
+                                    delta=fc.arguments,
+                                )
+                            )
+                        )
                         self.wfile.flush()
                         # function_call_arguments.done
                         last_sequence += 1
-                        self.wfile.write(encode_sse(ResponseStreamEvent(
-                            type="response.function_call_arguments.done",
-                            sequence_number=last_sequence,
-                            output_index=0,
-                            content_index=0,
-                            item_id=fc.call_id,
-                            text=fc.arguments,
-                        )))
+                        self.wfile.write(
+                            encode_sse(
+                                ResponseStreamEvent(
+                                    type="response.function_call_arguments.done",
+                                    sequence_number=last_sequence,
+                                    output_index=0,
+                                    content_index=0,
+                                    item_id=fc.call_id,
+                                    text=fc.arguments,
+                                )
+                            )
+                        )
                         self.wfile.flush()
                         # output_item.done with completed status
                         fc_item_done = ResponseFunctionCall(
@@ -919,12 +1080,16 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                             arguments=fc.arguments,
                         )
                         last_sequence += 1
-                        self.wfile.write(encode_sse(ResponseStreamEvent(
-                            type="response.output_item.done",
-                            sequence_number=last_sequence,
-                            output_index=0,
-                            item=fc_item_done,
-                        )))
+                        self.wfile.write(
+                            encode_sse(
+                                ResponseStreamEvent(
+                                    type="response.output_item.done",
+                                    sequence_number=last_sequence,
+                                    output_index=0,
+                                    item=fc_item_done,
+                                )
+                            )
+                        )
                         self.wfile.flush()
                     # Now emit response.completed with all output items
                     break
@@ -980,19 +1145,25 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             # Build output items: text message + function calls
             output_items: list[ResponseOutputMessage | ResponseFunctionCall] = []
             if completed_response.output_text or not accumulated_stream_calls:
-                output_items.append(ResponseOutputMessage(
-                    id=message_id,
-                    status="completed",
-                    content=[ResponseOutputText(text=completed_response.output_text or prior_text)],
-                ))
+                output_items.append(
+                    ResponseOutputMessage(
+                        id=message_id,
+                        status="completed",
+                        content=[
+                            ResponseOutputText(text=completed_response.output_text or prior_text)
+                        ],
+                    )
+                )
             for fc in accumulated_stream_calls:
-                output_items.append(ResponseFunctionCall(
-                    id=fc.call_id,
-                    status="completed",
-                    call_id=fc.call_id,
-                    name=fc.name,
-                    arguments=fc.arguments,
-                ))
+                output_items.append(
+                    ResponseFunctionCall(
+                        id=fc.call_id,
+                        status="completed",
+                        call_id=fc.call_id,
+                        name=fc.name,
+                        arguments=fc.arguments,
+                    )
+                )
             final_response = ResponseObject(
                 id=response_id,
                 created_at=created_at,
@@ -1004,11 +1175,15 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             )
             last_sequence += 1
             try:
-                self.wfile.write(encode_sse(ResponseStreamEvent(
-                    type="response.completed",
-                    sequence_number=last_sequence,
-                    response=final_response,
-                )))
+                self.wfile.write(
+                    encode_sse(
+                        ResponseStreamEvent(
+                            type="response.completed",
+                            sequence_number=last_sequence,
+                            response=final_response,
+                        )
+                    )
+                )
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -1030,20 +1205,26 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                         fc_args = json.loads(fc.arguments) if fc.arguments else {}
                     except json.JSONDecodeError:
                         fc_args = {}
-                    stored_messages.append(ProviderMessage(
-                        role="assistant",
-                        content=completed_response.output_text or "",
-                        tool_calls=[{
-                            "id": fc.call_id,
-                            "type": "function",
-                            "function": {"name": fc.name, "arguments": fc_args},
-                        }],
-                    ))
+                    stored_messages.append(
+                        ProviderMessage(
+                            role="assistant",
+                            content=completed_response.output_text or "",
+                            tool_calls=[
+                                {
+                                    "id": fc.call_id,
+                                    "type": "function",
+                                    "function": {"name": fc.name, "arguments": fc_args},
+                                }
+                            ],
+                        )
+                    )
             else:
-                stored_messages.append(ProviderMessage(
-                    role="assistant",
-                    content=completed_response.output_text,
-                ))
+                stored_messages.append(
+                    ProviderMessage(
+                        role="assistant",
+                        content=completed_response.output_text,
+                    )
+                )
             RESPONSE_STATE.put(response_id, stored_messages, route_lease)
 
     def do_GET(self) -> None:

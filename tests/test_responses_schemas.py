@@ -78,7 +78,10 @@ def test_response_request_accepts_additional_tools_in_input() -> None:
                             "type": "function",
                             "name": "shell_command",
                             "description": "Run a command",
-                            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"command": {"type": "string"}},
+                            },
                             "strict": True,
                         }
                     ],

@@ -30,6 +30,9 @@ class WorkerSettings(BaseSettings):
     llm_stream: bool = True
     llm_json_mode: JsonMode = JsonMode.AUTO
     llm_keep_alive: str = "30m"
+    # Per-request "don't think" flag for reasoning models (qwen3.x). None = do not
+    # send the think parameter, leaving the model's default (thinking enabled).
+    llm_think: bool | None = None
     llm_unload_policy: str = "immediate"  # "immediate", "never", or minutes like "5", "10", "30"
     ollama_base_url: HttpUrl | None = None
     ollama_model: str | None = None

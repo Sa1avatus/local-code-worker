@@ -84,14 +84,15 @@ metadata are centralized without a hardcoded table of routing model names.
 ## Local Responses API subset
 
 `POST /v1/responses` accepts strict text input/messages, separate instructions, reasoning settings,
-function tools, tool choice, output limits, `store`, and `previous_response_id`. Non-stream function
-calls are normalized from both Ollama and OpenAI-compatible formats into Responses
-`function_call` output items. Text streaming emits ordered Responses SSE events; provider failures
-after HTTP 200 emit `response.failed`.
+function tools, tool choice, output limits, `store`, and `previous_response_id`. Function calls are
+normalized from both Ollama and OpenAI-compatible formats into Responses `function_call` output
+items. Streaming emits ordered text and function-call SSE events; provider failures after HTTP 200
+emit `response.failed`.
 
-The intentionally unsupported combinations are multimodal input and streaming function tools.
-They return explicit request errors rather than being ignored or silently buffered. Stored response
-context is bounded process-local memory with a 15-minute TTL and is not written to disk.
+Multimodal input remains intentionally unsupported and returns an explicit request error. Stored
+response context is bounded process-local memory with a configurable TTL of two hours by default
+and is not written to disk. Hosted web tools are executed only when declared by the client; ordinary
+function calls remain passthrough output for the client to execute.
 
 ## Virtual models
 

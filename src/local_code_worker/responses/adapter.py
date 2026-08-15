@@ -9,17 +9,15 @@ from ..providers.base import (
     ProviderMessage,
     ProviderRequest,
 )
-from ..tools.models import NormalizedTool, ToolKind, hosted_tool_description, HOSTED_TOOL_SCHEMAS
+from ..tools.models import HOSTED_TOOL_SCHEMAS, NormalizedTool, ToolKind, hosted_tool_description
 from ..tools.normalizer import normalize_request_tools, separate_tools
 from .schemas import (
     ResponseAdditionalTools,
     ResponseCreateRequest,
-    ResponseFunctionTool,
     ResponseFunctionToolChoice,
     ResponseInputFunctionCall,
     ResponseInputFunctionCallOutput,
     ResponseInputMessage,
-    ResponseNamespaceTool,
 )
 
 # Core Codex tools that should always be included when present.

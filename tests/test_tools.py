@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock
 
-from local_code_worker.responses.schemas import ResponseCreateRequest
 from local_code_worker.responses.adapter import adapt_response_request
-from local_code_worker.tools.models import NormalizedTool, ToolKind, HOSTED_TOOL_SCHEMAS, hosted_tool_description
-from local_code_worker.tools.normalizer import normalize_tool_dict, normalize_request_tools, separate_tools
+from local_code_worker.responses.schemas import ResponseCreateRequest
 from local_code_worker.tools.executor import ToolExecutor
-from local_code_worker.tools.search.base import SearchResponse, SearchResult, FetchResponse
-
+from local_code_worker.tools.models import (
+    HOSTED_TOOL_SCHEMAS,
+    NormalizedTool,
+    ToolKind,
+    hosted_tool_description,
+)
+from local_code_worker.tools.normalizer import (
+    normalize_request_tools,
+    normalize_tool_dict,
+    separate_tools,
+)
+from local_code_worker.tools.search.base import FetchResponse, SearchResponse, SearchResult
 
 # ── ToolKind ──────────────────────────────────────────────────────────────────
 
@@ -171,7 +178,12 @@ def test_adapter_handles_function_call_output_input() -> None:
         "model": "test",
         "input": [
             {"type": "message", "role": "user", "content": "search for X"},
-            {"type": "function_call", "call_id": "call_1", "name": "web_search", "arguments": '{"query":"X"}'},
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "web_search",
+                "arguments": '{"query":"X"}',
+            },
             {"type": "function_call_output", "call_id": "call_1", "output": "search results here"},
             {"type": "message", "role": "user", "content": "summarize"},
         ],
@@ -280,7 +292,8 @@ def test_web_fetch_blocks_private_hosts() -> None:
     from local_code_worker.tools.search.web_fetch import WebFetch
     fetcher = WebFetch()
     result = fetcher.fetch("http://127.0.0.1:8765/v1/models")
-    assert "not allowed" in result.text.lower() or "private" in result.text.lower() or "error" in result.text.lower()
+    text = result.text.lower()
+    assert "not allowed" in text or "private" in text or "error" in text
 
 
 def test_web_fetch_blocks_localhost() -> None:

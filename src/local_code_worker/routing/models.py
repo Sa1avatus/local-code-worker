@@ -66,6 +66,10 @@ class TierConfig(StrictModel):
     enabled: bool = True
     base_url: HttpUrl | None = None
     context_length: int | None = Field(default=None, ge=512, le=131_072)
+    # Optional output budget for the routing capability check; defaults to a
+    # generous ceiling so client budgets (e.g. matching extraction, 16k tokens)
+    # are not rejected because the tier hardcoded a 4096-token capability.
+    max_output_tokens: int | None = Field(default=None, ge=1, le=131_072)
     api_key_env: str | None = None
     capabilities: "ModelCapabilities | None" = None
 

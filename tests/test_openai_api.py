@@ -774,6 +774,135 @@ def test_chat_completions_supports_sse_shape(api_server: int) -> None:
     assert content.endswith("data: [DONE]\n\n")
 
 
+def _configure_router_tiers(api_server: int, models: dict[str, str]) -> None:
+    tiers = {
+        name: {
+            "enabled": True,
+            "provider": "ollama",
+            "base_url": "http://localhost:11434",
+            "model": model_name,
+            "context_length": 32768,
+            "api_key_action": "keep",
+        }
+        for name, model_name in models.items()
+    }
+    status, _, _ = request(
+        api_server,
+        "PUT",
+        "/api/v2/settings",
+        {
+            "mode": "router",
+            "tiers": tiers,
+            "routellm_enabled": False,
+            "routellm_threshold": 0.5,
+        },
+    )
+    assert status == 200
+
+
+def test_chat_completions_routes_through_router_tiers(api_server: int) -> None:
+    _configure_router_tiers(
+        api_server,
+        {"local": "local-succeeds", "mid": "mid-unused", "strong": "strong-unused"},
+    )
+
+    status, _, content = request(
+        api_server,
+        "POST",
+        "/v1/chat/completions",
+        {"model": "local-code-worker/auto", "messages": [{"role": "user", "content": "hello"}]},
+    )
+
+    assert status == 200, content
+    assert json.loads(content)["choices"][0]["message"]["content"] == "ok"
+    assert FakeProvider.attempted_models == ["local-succeeds"]
+
+
+def test_chat_completions_falls_back_from_local_to_mid(api_server: int) -> None:
+    _configure_router_tiers(
+        api_server,
+        {"local": "local-fails", "mid": "mid-succeeds", "strong": "strong-unused"},
+    )
+    FakeProvider.failing_models.add("local-fails")
+
+    status, _, content = request(
+        api_server,
+        "POST",
+        "/v1/chat/completions",
+        {"model": "local-code-worker/auto", "messages": [{"role": "user", "content": "hello"}]},
+    )
+
+    assert status == 200, content
+    assert json.loads(content)["choices"][0]["message"]["content"] == "ok"
+    assert FakeProvider.attempted_models == ["local-fails", "mid-succeeds"]
+
+
+def test_chat_completions_honors_client_context_and_think(api_server: int, monkeypatch) -> None:
+    providers: list[WorkerSettings] = []
+    original_create = web_app.create_provider
+
+    def recording_create(value: WorkerSettings) -> FakeProvider:
+        providers.append(value)
+        return original_create(value)
+
+    monkeypatch.setattr(web_app, "create_provider", recording_create)
+    # The tier default context is 32768; the client-provided 2048 must win.
+    _configure_router_tiers(
+        api_server,
+        {"local": "local-succeeds", "mid": "mid-unused", "strong": "strong-unused"},
+    )
+
+    status, _, content = request(
+        api_server,
+        "POST",
+        "/v1/chat/completions",
+        {
+            "model": "local-code-worker/auto",
+            "messages": [{"role": "user", "content": "hello"}],
+            "context_length": 2048,
+            "think": False,
+            "max_tokens": 16384,
+        },
+    )
+
+    assert status == 200, content
+    assert providers and providers[0].llm_num_ctx == 2048
+    assert providers[0].llm_think is False
+    # Client budgets above the 4096-token default are honored (extraction).
+    assert providers[0].llm_max_output_tokens == 16384
+
+
+def test_chat_completions_accepts_json_schema_response_format(api_server: int, monkeypatch) -> None:
+    seen_schemas: list[dict[str, object] | None] = []
+
+    def recording_chat(self, messages, response_schema, *args, **kwargs):
+        seen_schemas.append(response_schema)
+        self.attempted_models.append(self.settings.llm_model)
+        self.calls.append(messages)
+        return "ok"
+
+    monkeypatch.setattr(FakeProvider, "chat", recording_chat)
+    schema = {"type": "object", "properties": {"relation": {"type": "string"}}}
+
+    status, _, content = request(
+        api_server,
+        "POST",
+        "/v1/chat/completions",
+        {
+            "model": "local-code-worker/auto",
+            "messages": [{"role": "user", "content": "evaluate"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "structured_response", "strict": True, "schema": schema},
+            },
+        },
+    )
+
+    assert status == 200, content
+    # The extracted schema reaches the provider (Ollama format enforcement).
+    assert seen_schemas == [schema]
+
+
 def test_generation_requests_are_serialized(api_server: int, monkeypatch) -> None:
     first_started = threading.Event()
     release_first = threading.Event()
