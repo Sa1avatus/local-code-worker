@@ -88,6 +88,7 @@ def test_legacy_provider_panel_is_hidden_for_full_router_modes() -> None:
 
 def test_routing_ui_discovers_models_per_tier_without_inserting_html() -> None:
     assert '<select id="${name}Model"></select>' in INDEX_HTML
+    assert 'id="${name}FindModels"' in INDEX_HTML
     assert 'data-find-models="${name}"' in INDEX_HTML
     assert "Найти модели" in INDEX_HTML
     assert "discoverRouting" not in INDEX_HTML
@@ -100,6 +101,14 @@ def test_routing_ui_discovers_models_per_tier_without_inserting_html() -> None:
     assert "option.value=model" in INDEX_HTML
     assert "option.textContent=model" in INDEX_HTML
     assert "setTierModel(name,current)" in INDEX_HTML
+
+
+def test_routing_ui_find_button_sits_below_api_key() -> None:
+    assert 'KeyState"></small><button class="secondary" id="${name}FindModels"' in INDEX_HTML
+    assert (
+        'id="${name}FindModels" type="button" data-find-models="${name}">Найти модели</button>'
+        in INDEX_HTML
+    )
 
 
 def test_routing_ui_find_models_uses_only_its_own_card_settings() -> None:
