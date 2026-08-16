@@ -249,6 +249,47 @@ def test_save_gateway_settings_round_trips_think(tmp_path: Path) -> None:
     assert "GATEWAY_STRONG_THINK" not in text
 
 
+def test_save_gateway_settings_round_trips_show_reasoning(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    value = GatewaySettingsInput.model_validate(
+        {
+            "mode": "router",
+            "tiers": {
+                "local": {
+                    "provider": "ollama",
+                    "base_url": "http://localhost:11434",
+                    "model": "local",
+                    "context_length": 16384,
+                    "show_reasoning": False,
+                },
+                "mid": {
+                    "provider": "ollama",
+                    "base_url": "http://localhost:11434",
+                    "model": "mid",
+                    "context_length": 16384,
+                    "show_reasoning": True,
+                },
+                "strong": {
+                    "provider": "openai-compatible",
+                    "base_url": "https://cloud.example/v1",
+                    "model": "strong",
+                    "context_length": 16384,
+                },
+            },
+        }
+    )
+
+    result = save_gateway_settings(value, env_path)
+
+    assert result["tiers"]["local"]["show_reasoning"] is False
+    assert result["tiers"]["mid"]["show_reasoning"] is True
+    assert result["tiers"]["strong"]["show_reasoning"] is None  # default = show
+    text = env_path.read_text(encoding="utf-8")
+    assert "GATEWAY_LOCAL_SHOW_REASONING" in text
+    assert "GATEWAY_MID_SHOW_REASONING" in text
+    assert "GATEWAY_STRONG_SHOW_REASONING" not in text
+
+
 def test_gateway_settings_reject_invalid_num_parallel() -> None:
     base = {
         "mode": "router",

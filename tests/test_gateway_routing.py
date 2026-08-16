@@ -230,6 +230,34 @@ def test_gateway_defaults_think_to_none() -> None:
     )
 
     assert selected.llm_think is None
+    assert selected.llm_show_reasoning is None
+
+
+def test_gateway_applies_tier_show_reasoning() -> None:
+    worker = worker_settings()
+    routing = GatewayRoutingSettings(
+        mode=RoutingMode.ROUTER,
+        tiers={
+            ModelTier.MID: TierConfig(
+                provider=ProviderName.OLLAMA,
+                base_url="http://localhost:11435",
+                model="gemma4:12b",
+                context_length=64_000,
+                think=True,
+                show_reasoning=False,
+            )
+        },
+    )
+
+    selected, _ = resolve_gateway_route(
+        request(),
+        "local-code-worker/mid",
+        worker,
+        routing,
+    )
+
+    assert selected.llm_think is True
+    assert selected.llm_show_reasoning is False
 
 
 def test_gateway_uses_deterministic_route_when_routellm_backend_fails() -> None:

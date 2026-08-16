@@ -381,7 +381,11 @@ class OllamaProvider:
                             )
                         text = chunk.get("message", {}).get("content", "")
                         thinking = chunk.get("message", {}).get("thinking", "")
-                        if isinstance(thinking, str) and thinking:
+                        if (
+                            isinstance(thinking, str)
+                            and thinking
+                            and self.settings.llm_show_reasoning is not False
+                        ):
                             reasoning_parts.append(thinking)
                             # Stream reasoning live so the client can render the
                             # chain-of-thought as it is produced (Ollama emits
@@ -566,7 +570,11 @@ class OllamaProvider:
             payload.get("done_reason"),
             _parse_usage(payload),
             function_calls,
-            thinking if isinstance(thinking, str) else None,
+            (
+                thinking
+                if isinstance(thinking, str) and self.settings.llm_show_reasoning is not False
+                else None
+            ),
         )
 
     def generate(self, system_prompt: str, user_context: str, max_output_characters: int) -> str:

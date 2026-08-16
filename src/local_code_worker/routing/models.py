@@ -74,6 +74,9 @@ class TierConfig(StrictModel):
     # not send the parameter, leaving the model's default; False disables
     # thinking to save the token budget, True forces it.
     think: bool | None = None
+    # Whether to surface the model's reasoning trace to the client. None or True
+    # forward it, False hides it (the model still thinks internally).
+    show_reasoning: bool | None = None
     # Optional output budget for the routing capability check; defaults to a
     # generous ceiling so client budgets (e.g. matching extraction, 16k tokens)
     # are not rejected because the tier hardcoded a 4096-token capability.

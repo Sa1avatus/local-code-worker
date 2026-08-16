@@ -211,6 +211,36 @@ def test_ollama_stream_emits_reasoning_before_content() -> None:
     assert provider.last_generation_metadata.reasoning == "Let me think."
 
 
+def test_ollama_stream_hides_reasoning_when_show_reasoning_false() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    '{"message":{"thinking":"hidden"},"done":false}',
+                    '{"message":{"content":"answer"},"done":false}',
+                    '{"message":{"content":""},"done":true,"done_reason":"stop"}',
+                ]
+            ),
+        )
+    )
+    provider = OllamaProvider(ollama_settings(llm_show_reasoning=False), transport)
+    request = ProviderRequest(
+        messages=[ProviderMessage(role="user", content="hello")],
+        max_output_characters=100,
+        json_mode=JsonMode.AUTO,
+        stream=True,
+    )
+
+    events = list(provider.stream(request))
+
+    assert not any(isinstance(event, ProviderReasoningDeltaEvent) for event in events)
+    content = [event.delta for event in events if isinstance(event, ProviderTextDeltaEvent)]
+    assert content == ["answer"]
+    assert provider.last_generation_metadata is not None
+    assert provider.last_generation_metadata.reasoning is None
+
+
 def test_ollama_stream_cancellation_closes_http_stream() -> None:
     class TrackingStream(httpx.SyncByteStream):
         def __init__(self) -> None:

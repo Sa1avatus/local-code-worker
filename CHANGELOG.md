@@ -28,9 +28,18 @@ derived from project metadata and commit history.
   exposes a "Think (рассуждения)" dropdown (по умолчанию модели / включено / выключено) per card,
   stored as `GATEWAY_<TIER>_THINK`. A client-supplied `think` in `/v1/chat/completions` still wins
   over the tier default.
+- Added a per-tier `show_reasoning` setting that controls whether the model's reasoning trace is
+  surfaced to the client (stored as `GATEWAY_<TIER>_SHOW_REASONING`). `None`/`true` forward it as
+  `reasoning_content`/`reasoning`; `false` hides the chain-of-thought while the model still thinks
+  internally (like OpenAI o-series). `OllamaProvider` drops reasoning deltas and the metadata
+  `reasoning` field when it is `false`.
 
 ### Changed
 
+- Changed the "Think (рассуждения)" routing dropdown from three states to four combined states:
+  «по умолчанию», «включено с выводом» (think on + reasoning shown), «включено без вывода»
+  (think on + reasoning hidden), and «выключено». The UI maps the single dropdown to the two
+  per-tier settings `think` and `show_reasoning`.
 - Changed the routing UI to remove the shared "Найти локальные модели" button; the legacy
   admin `GET /api/models` endpoint remains available for the single-provider panel.
 - Changed OpenAI-compatible model listing so a request without a configured API key is sent

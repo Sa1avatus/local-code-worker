@@ -151,8 +151,18 @@ def test_routing_ui_has_per_tier_num_parallel_field() -> None:
 def test_routing_ui_has_per_tier_think_field() -> None:
     assert 'id="${name}Think"' in INDEX_HTML
     assert "Think (рассуждения)" in INDEX_HTML
-    assert "$(name+'Think').value=data.think==null?'':String(data.think)" in INDEX_HTML
-    assert "think:($(name+'Think').value===''?null:$(name+'Think').value==='true')" in INDEX_HTML
+    # 4 combined states: default / thinking+show / thinking+hide / off
+    assert '<option value="show">включено с выводом</option>' in INDEX_HTML
+    assert '<option value="hide">включено без вывода</option>' in INDEX_HTML
+    assert '<option value="off">выключено</option>' in INDEX_HTML
+    # fillTier maps (think, show_reasoning) back onto the dropdown value
+    assert (
+        "$(name+'Think').value=data.think===true?(data.show_reasoning===false?'hide':'show'):(data.think===false?'off':'')"
+        in INDEX_HTML
+    )
+    # tierPayload sends both fields derived from the dropdown value
+    assert "show_reasoning=(tv==='show')?true:(tv==='hide'?false:null)" in INDEX_HTML
+    assert "think:think,show_reasoning:show_reasoning" in INDEX_HTML
 
 
 def test_routing_dashboard_renders_status_metrics() -> None:

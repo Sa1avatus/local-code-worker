@@ -37,6 +37,10 @@ class WorkerSettings(BaseSettings):
     # Per-request "don't think" flag for reasoning models (qwen3.x). None = do not
     # send the think parameter, leaving the model's default (thinking enabled).
     llm_think: bool | None = None
+    # Whether to surface the model's reasoning trace to the client. None or True
+    # forward it (reasoning_content / reasoning); False hides it while the model
+    # still thinks internally.
+    llm_show_reasoning: bool | None = None
     llm_unload_policy: str = "immediate"  # "immediate", "never", or minutes like "5", "10", "30"
     ollama_base_url: HttpUrl | None = None
     ollama_model: str | None = None

@@ -42,6 +42,8 @@ def _apply_decision(
             updates["llm_num_ctx"] = tier_config.context_length
         if tier_config.think is not None:
             updates["llm_think"] = tier_config.think
+        if tier_config.show_reasoning is not None:
+            updates["llm_show_reasoning"] = tier_config.show_reasoning
         updates["llm_num_parallel"] = tier_config.num_parallel
         updates["llm_api_key"] = None
         updates["llm_api_key_env"] = tier_config.api_key_env
