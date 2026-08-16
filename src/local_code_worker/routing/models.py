@@ -70,6 +70,10 @@ class TierConfig(StrictModel):
     # runner context as num_ctx * num_parallel, so large models need 1 while
     # small matching models can use several slots. Default 1.
     num_parallel: int = Field(default=1, ge=1, le=64)
+    # Reasoning "think" toggle for Ollama thinking models (qwen3.x). None = do
+    # not send the parameter, leaving the model's default; False disables
+    # thinking to save the token budget, True forces it.
+    think: bool | None = None
     # Optional output budget for the routing capability check; defaults to a
     # generous ceiling so client budgets (e.g. matching extraction, 16k tokens)
     # are not rejected because the tier hardcoded a 4096-token capability.

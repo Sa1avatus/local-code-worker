@@ -69,6 +69,7 @@ class RoutingTierSettingsInput(BaseModel):
     model: str
     context_length: int = Field(ge=512, le=131_072)
     num_parallel: int = Field(default=1, ge=1, le=64)
+    think: bool | None = None
     api_key_action: Literal["keep", "replace", "clear"] = "keep"
     api_key: SecretStr | None = None
 

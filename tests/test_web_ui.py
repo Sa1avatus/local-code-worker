@@ -148,6 +148,13 @@ def test_routing_ui_has_per_tier_num_parallel_field() -> None:
     assert "num_parallel:Number($(name+'Parallel').value)||1" in INDEX_HTML
 
 
+def test_routing_ui_has_per_tier_think_field() -> None:
+    assert 'id="${name}Think"' in INDEX_HTML
+    assert "Think (рассуждения)" in INDEX_HTML
+    assert "$(name+'Think').value=data.think==null?'':String(data.think)" in INDEX_HTML
+    assert "think:($(name+'Think').value===''?null:$(name+'Think').value==='true')" in INDEX_HTML
+
+
 def test_routing_dashboard_renders_status_metrics() -> None:
     assert 'id="routerMetrics"' in INDEX_HTML
     assert "'/api/v2/router/status'" in INDEX_HTML

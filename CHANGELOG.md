@@ -22,6 +22,12 @@ derived from project metadata and commit history.
 - Added Ollama discovery via `GET {base_url}/api/tags` and OpenAI-compatible discovery via
   `GET {base_url}/v1/models`, normalizing Base URLs so a missing `/v1` suffix is added once
   (never `/v1/v1/models` or `//v1/models`).
+- Added a per-tier `think` setting for LOCAL/MID/STRONG routing tiers (default `None` = model
+  default). The gateway sends `think` to Ollama only when set: `false` disables the reasoning
+  trace on qwen3.x thinking models to save the token budget, `true` forces it. The routing UI
+  exposes a "Think (рассуждения)" dropdown (по умолчанию модели / включено / выключено) per card,
+  stored as `GATEWAY_<TIER>_THINK`. A client-supplied `think` in `/v1/chat/completions` still wins
+  over the tier default.
 
 ### Changed
 

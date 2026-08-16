@@ -182,6 +182,56 @@ def test_gateway_defaults_num_parallel_to_one() -> None:
     assert selected.llm_num_parallel == 1
 
 
+def test_gateway_applies_tier_think() -> None:
+    worker = worker_settings()
+    routing = GatewayRoutingSettings(
+        mode=RoutingMode.ROUTER,
+        tiers={
+            ModelTier.MID: TierConfig(
+                provider=ProviderName.OLLAMA,
+                base_url="http://localhost:11435",
+                model="gemma4:12b",
+                context_length=64_000,
+                think=False,
+            )
+        },
+    )
+
+    selected, _ = resolve_gateway_route(
+        request(),
+        "local-code-worker/mid",
+        worker,
+        routing,
+    )
+
+    assert selected.llm_model == "gemma4:12b"
+    assert selected.llm_think is False
+
+
+def test_gateway_defaults_think_to_none() -> None:
+    worker = worker_settings()
+    routing = GatewayRoutingSettings(
+        mode=RoutingMode.ROUTER,
+        tiers={
+            ModelTier.LOCAL: TierConfig(
+                provider=ProviderName.OLLAMA,
+                base_url="http://localhost:11434",
+                model="qwen3.5:4b",
+                context_length=12_000,
+            )
+        },
+    )
+
+    selected, _ = resolve_gateway_route(
+        request(),
+        "local-code-worker/local",
+        worker,
+        routing,
+    )
+
+    assert selected.llm_think is None
+
+
 def test_gateway_uses_deterministic_route_when_routellm_backend_fails() -> None:
     worker = worker_settings()
     routing = GatewayRoutingSettings(

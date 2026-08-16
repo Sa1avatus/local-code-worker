@@ -34,6 +34,17 @@ def _parse_optional_int(value: str | None) -> int | None:
     return parsed
 
 
+def _parse_optional_bool(value: str | None) -> bool | None:
+    if value is None or not str(value).strip():
+        return None
+    normalized = str(value).strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean configuration value: {value}")
+
+
 def load_gateway_routing_settings(
     env_path: Path = Path(".env"),
 ) -> GatewayRoutingSettings:
@@ -59,6 +70,7 @@ def load_gateway_routing_settings(
                 base_url=value(f"{prefix}_BASE_URL"),
                 context_length=int(value(f"{prefix}_CONTEXT_LENGTH") or "16384"),
                 num_parallel=_parse_optional_int(value(f"{prefix}_NUM_PARALLEL")) or 1,
+                think=_parse_optional_bool(value(f"{prefix}_THINK")),
                 api_key_env=value(f"{prefix}_API_KEY_ENV"),
             )
 
@@ -103,6 +115,7 @@ def public_gateway_settings(env_path: Path = Path(".env")) -> dict[str, object]:
             "model": config.model,
             "context_length": config.context_length,
             "num_parallel": config.num_parallel,
+            "think": config.think,
             "api_key_configured": configured,
             "api_key_env": key_name,
         }
@@ -145,6 +158,10 @@ def save_gateway_settings(
         set_key(path, f"{prefix}_MODEL", config.model)
         set_key(path, f"{prefix}_CONTEXT_LENGTH", str(config.context_length))
         set_key(path, f"{prefix}_NUM_PARALLEL", str(config.num_parallel))
+        if config.think is None:
+            unset_key(path, f"{prefix}_THINK")
+        else:
+            set_key(path, f"{prefix}_THINK", str(config.think).lower())
         if config.api_key_action == "replace":
             assert config.api_key is not None
             set_key(path, f"{prefix}_API_KEY_ENV", key_name)

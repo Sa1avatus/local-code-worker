@@ -220,15 +220,15 @@ label{display:block;color:var(--muted);font-size:13px;margin-bottom:6px}input,se
 const $=id=>document.getElementById(id), provider=$('provider'), baseUrl=$('baseUrl'), model=$('model'), contextLength=$('contextLength'), pullModel=$('pullModel'), apiKey=$('apiKey'), status=$('status'), progress=$('progress'), runtime=$('runtime'), runtimeUpdated=$('runtimeUpdated'), metrics=$('metrics'), routerMetrics=$('routerMetrics'), usageStats=$('usageStats');unloadPolicy=$('unloadPolicy');let clearKey=false;
 const tierNames=['local','mid','strong'],tierLabels={local:'LOCAL',mid:'MID',strong:'STRONG'},tierHelp={local:'Первая локальная модель: быстрые и простые задачи.',mid:'Локальная модель для рассуждений и сложного исполнения.',strong:'Последний уровень; здесь можно указать облачную модель.'},clearedTierKeys=new Set();const tierFindLoading={local:false,mid:false,strong:false},tierModelLists={local:[],mid:[],strong:[]};
 function routingMessage(text,ok=true){const node=$('routingStatus');node.textContent=text;node.className='status '+(ok?'ok':'bad')}
-function tierCard(name){const card=document.createElement('div');card.className='tier';card.dataset.tier=name;card.innerHTML=`<h3>${tierLabels[name]}</h3><p>${tierHelp[name]}</p><div class="check"><input id="${name}Enabled" type="checkbox"><label for="${name}Enabled">Уровень включён</label></div><label for="${name}Provider">Провайдер</label><select id="${name}Provider"><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI-compatible</option></select><label for="${name}BaseUrl">Base URL</label><input id="${name}BaseUrl"><label for="${name}Model">Модель</label><select id="${name}Model"></select><label for="${name}Context">Контекст</label><input id="${name}Context" type="number" min="512" max="131072" step="512"><label for="${name}Parallel">Параллелизм (слотов)</label><input id="${name}Parallel" type="number" min="1" max="64" step="1" placeholder="по умолчанию"><label for="${name}Key">API-ключ (пусто = оставить)</label><div class="keyrow"><input id="${name}Key" type="password" autocomplete="new-password"><button class="secondary" type="button" data-clear-key="${name}">×</button></div><small id="${name}KeyState"></small><button class="secondary" id="${name}FindModels" type="button" data-find-models="${name}">Найти модели</button><small id="${name}FindStatus"></small>`;return card}
+function tierCard(name){const card=document.createElement('div');card.className='tier';card.dataset.tier=name;card.innerHTML=`<h3>${tierLabels[name]}</h3><p>${tierHelp[name]}</p><div class="check"><input id="${name}Enabled" type="checkbox"><label for="${name}Enabled">Уровень включён</label></div><label for="${name}Provider">Провайдер</label><select id="${name}Provider"><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI-compatible</option></select><label for="${name}BaseUrl">Base URL</label><input id="${name}BaseUrl"><label for="${name}Model">Модель</label><select id="${name}Model"></select><label for="${name}Context">Контекст</label><input id="${name}Context" type="number" min="512" max="131072" step="512"><label for="${name}Parallel">Параллелизм (слотов)</label><input id="${name}Parallel" type="number" min="1" max="64" step="1" placeholder="по умолчанию"><label for="${name}Think">Think (рассуждения)</label><select id="${name}Think"><option value="">по умолчанию модели</option><option value="true">включено</option><option value="false">выключено</option></select><label for="${name}Key">API-ключ (пусто = оставить)</label><div class="keyrow"><input id="${name}Key" type="password" autocomplete="new-password"><button class="secondary" type="button" data-clear-key="${name}">×</button></div><small id="${name}KeyState"></small><button class="secondary" id="${name}FindModels" type="button" data-find-models="${name}">Найти модели</button><small id="${name}FindStatus"></small>`;return card}
 for(const name of tierNames)$('tierCards').appendChild(tierCard(name));
 const legacySettings=provider.closest('section.card'),legacyModes=new Set(['legacy','observe_only','shadow','canary']);
 function syncLegacySettings(){legacySettings.hidden=!legacyModes.has($('routeMode').value)}
 syncLegacySettings();
 $('routeMode').addEventListener('change',syncLegacySettings);
 function setTierModel(name,value){const select=$(name+'Model');if(value&&![...select.options].some(option=>option.value===value)){const option=document.createElement('option');option.value=value;option.textContent=value;select.appendChild(option)}select.value=value||''}
-function fillTier(name,data){$(name+'Enabled').checked=data.enabled;$(name+'Provider').value=data.provider;$(name+'BaseUrl').value=data.base_url||'';setTierModel(name,data.model);$(name+'Context').value=data.context_length||32768;$(name+'Parallel').value=data.num_parallel;$(name+'Key').value='';$(name+'KeyState').textContent=data.api_key_configured?'Ключ сохранён':'Ключ не задан'}
-function tierPayload(name){const key=$(name+'Key').value,clear=clearedTierKeys.has(name),action=clear?'clear':key?'replace':'keep';return {enabled:$(name+'Enabled').checked,provider:$(name+'Provider').value,base_url:$(name+'BaseUrl').value,model:$(name+'Model').value,context_length:Number($(name+'Context').value),num_parallel:Number($(name+'Parallel').value)||1,api_key_action:action,api_key:action==='replace'?key:null}}
+function fillTier(name,data){$(name+'Enabled').checked=data.enabled;$(name+'Provider').value=data.provider;$(name+'BaseUrl').value=data.base_url||'';setTierModel(name,data.model);$(name+'Context').value=data.context_length||32768;$(name+'Parallel').value=data.num_parallel;$(name+'Think').value=data.think==null?'':String(data.think);$(name+'Key').value='';$(name+'KeyState').textContent=data.api_key_configured?'Ключ сохранён':'Ключ не задан'}
+function tierPayload(name){const key=$(name+'Key').value,clear=clearedTierKeys.has(name),action=clear?'clear':key?'replace':'keep';return {enabled:$(name+'Enabled').checked,provider:$(name+'Provider').value,base_url:$(name+'BaseUrl').value,model:$(name+'Model').value,context_length:Number($(name+'Context').value),num_parallel:Number($(name+'Parallel').value)||1,think:($(name+'Think').value===''?null:$(name+'Think').value==='true'),api_key_action:action,api_key:action==='replace'?key:null}}
 async function loadRouting(){try{const data=await jsonFetch('/api/v2/settings');$('routeMode').value=data.mode;syncLegacySettings();$('routeLlm').checked=data.routellm_enabled;$('routeThreshold').value=data.routellm_threshold;$('localThreshold').value=data.local_threshold;$('strongThreshold').value=data.strong_threshold;$('canaryPercent').value=data.canary_percent;$('maxEscalations').value=data.max_escalations_per_lease;for(const name of tierNames)fillTier(name,data.tiers[name]);routingMessage('Маршрутизация загружена')}catch(e){routingMessage(e.message,false)}}
 async function saveRouting(){try{const tiers=Object.fromEntries(tierNames.map(name=>[name,tierPayload(name)])),data=await jsonFetch('/api/v2/settings',{method:'PUT',body:JSON.stringify({mode:$('routeMode').value,tiers,routellm_enabled:$('routeLlm').checked,routellm_threshold:Number($('routeThreshold').value),local_threshold:Number($('localThreshold').value),strong_threshold:Number($('strongThreshold').value),canary_percent:Number($('canaryPercent').value),max_escalations_per_lease:Number($('maxEscalations').value)})});clearedTierKeys.clear();for(const name of tierNames)fillTier(name,data.tiers[name]);routingMessage('Маршрутизация сохранена',true)}catch(e){routingMessage(e.message,false)}}
 async function findModels(name){if(tierFindLoading[name])return;const button=$(name+'FindModels'),statusNode=$(name+'FindStatus'),baseUrl=$(name+'BaseUrl').value.trim();if(!baseUrl){statusNode.textContent='Укажите Base URL';statusNode.className='bad';return}statusNode.textContent='';statusNode.className='';button.disabled=true;button.textContent='Поиск…';tierFindLoading[name]=true;try{const data=await jsonFetch('/api/v2/discover-models',{method:'POST',body:JSON.stringify({tier:name,provider:$(name+'Provider').value,base_url:baseUrl,api_key:$(name+'Key').value||null})});const models=[...new Set((Array.isArray(data.models)?data.models:[]).filter(model=>typeof model==='string'&&model.trim()).map(model=>model.trim()))];tierModelLists[name]=models;const select=$(name+'Model'),current=select.value;select.replaceChildren();for(const model of models){const option=document.createElement('option');option.value=model;option.textContent=model;select.appendChild(option)}setTierModel(name,current);statusNode.textContent=`Найдено моделей: ${models.length}`;statusNode.className='ok'}catch(e){statusNode.textContent=e.message;statusNode.className='bad'}finally{button.disabled=false;button.textContent='Найти модели';tierFindLoading[name]=false}}
@@ -413,6 +413,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         bool,
         str,
         int | None,
+        bool | None,
         dict[str, object] | None,
     ]:
         payload = self._read_json(max_bytes=REQUEST_LIMITS.max_ui_request_bytes)
@@ -490,11 +491,15 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             updates["llm_num_ctx"] = context_length
             client_context_length = context_length
         # Per-request "don't think" for reasoning models; absent = model default.
+        # Captured separately so it is re-applied after routing, where the routed
+        # tier's own think default would otherwise win.
         think = payload.get("think")
+        client_think: bool | None = None
         if think is not None:
             if not isinstance(think, bool):
                 raise ValueError("think must be a boolean")
             updates["llm_think"] = think
+            client_think = think
         stream = payload.get("stream", False)
         if not isinstance(stream, bool):
             raise ValueError("stream must be a boolean")
@@ -504,6 +509,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             stream,
             virtual_model.id,
             client_context_length,
+            client_think,
             response_schema,
         )
 
@@ -514,6 +520,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             stream,
             public_model,
             client_context_length,
+            client_think,
             response_schema,
         ) = self._chat_request()
         provider_request = ProviderRequest(
@@ -541,6 +548,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             # The routed tier sets its own num_ctx; a client-provided
             # context_length wins (matching passes its tuned budgets).
             settings = settings.model_copy(update={"llm_num_ctx": client_context_length})
+        if client_think is not None:
+            settings = settings.model_copy(update={"llm_think": client_think})
         response_id = f"chat_{uuid.uuid4().hex}"
         if routing_settings.mode is not RoutingMode.LEGACY:
             route_lease = create_route_lease(response_id, routing_plan.actual)
@@ -584,6 +593,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             settings, routing_plan = fallback
             if client_context_length is not None:
                 settings = settings.model_copy(update={"llm_num_ctx": client_context_length})
+            if client_think is not None:
+                settings = settings.model_copy(update={"llm_think": client_think})
             settings = self._settings_with_tier_secret(settings)
             provider = create_provider(settings)
             lease.model = settings.llm_model
