@@ -1,0 +1,18 @@
+{
+  "source": "saved",
+  "recipe": {
+    "name": "Local Code Worker (project venv)",
+    "kind": "fastapi",
+    "bootstrap": [],
+    "build": [],
+    "test": [
+      "bash -c \"unset PYTHONPATH; D:/OpenAIProjects/local-code-worker/.venv/Scripts/python.exe -m pytest tests/ -q --tb=short\""
+    ],
+    "start": "D:/OpenAIProjects/local-code-worker/.venv/Scripts/python.exe -m local_code_worker.cli web --host 127.0.0.1 --port 8765",
+    "port": 8765,
+    "readinessPath": "/",
+    "evidence": [
+      "Uses project .venv for test execution"
+    ]
+  }
+}
