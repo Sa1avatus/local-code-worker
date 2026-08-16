@@ -505,6 +505,20 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 raise ValueError("think must be a boolean")
             updates["llm_think"] = think
             client_think = think
+        # .env-defaulted sampling knobs; a client value wins per request and
+        # survives routing (routing never overwrites these fields).
+        seed = payload.get("seed")
+        if seed is not None:
+            if not isinstance(seed, int) or isinstance(seed, bool):
+                raise ValueError("seed must be an integer")
+            updates["llm_seed"] = seed
+        repeat_penalty = payload.get("repeat_penalty")
+        if repeat_penalty is not None:
+            if not isinstance(repeat_penalty, int | float) or isinstance(repeat_penalty, bool):
+                raise ValueError("repeat_penalty must be a positive number")
+            if repeat_penalty <= 0:
+                raise ValueError("repeat_penalty must be a positive number")
+            updates["llm_repeat_penalty"] = float(repeat_penalty)
         stream = payload.get("stream", False)
         if not isinstance(stream, bool):
             raise ValueError("stream must be a boolean")

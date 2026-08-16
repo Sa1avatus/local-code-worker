@@ -903,6 +903,39 @@ def test_chat_completions_honors_client_context_and_think(api_server: int, monke
     assert providers[0].llm_max_output_tokens == 16384
 
 
+def test_chat_completions_honors_client_seed_and_repeat_penalty(
+    api_server: int, monkeypatch
+) -> None:
+    providers: list[WorkerSettings] = []
+    original_create = web_app.create_provider
+
+    def recording_create(value: WorkerSettings) -> FakeProvider:
+        providers.append(value)
+        return original_create(value)
+
+    monkeypatch.setattr(web_app, "create_provider", recording_create)
+    _configure_router_tiers(
+        api_server,
+        {"local": "local-succeeds", "mid": "mid-unused", "strong": "strong-unused"},
+    )
+
+    status, _, content = request(
+        api_server,
+        "POST",
+        "/v1/chat/completions",
+        {
+            "model": "local-code-worker/auto",
+            "messages": [{"role": "user", "content": "hello"}],
+            "seed": 42,
+            "repeat_penalty": 1.2,
+        },
+    )
+
+    assert status == 200, content
+    assert providers and providers[0].llm_seed == 42
+    assert providers[0].llm_repeat_penalty == 1.2
+
+
 def test_chat_completions_accepts_json_schema_response_format(api_server: int, monkeypatch) -> None:
     seen_schemas: list[dict[str, object] | None] = []
 
@@ -992,6 +1025,33 @@ def test_chat_completions_rejects_invalid_messages(api_server: int) -> None:
         "POST",
         "/v1/chat/completions",
         {"messages": [{"role": "user", "content": ["not", "text"]}]},
+    )
+
+    assert status == 400
+    assert json.loads(content)["error"]["type"] == "invalid_request_error"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"seed": "forty-two"},
+        {"seed": True},
+        {"repeat_penalty": "high"},
+        {"repeat_penalty": 0},
+    ],
+)
+def test_chat_completions_rejects_invalid_seed_and_repeat_penalty(
+    api_server: int, extra: dict[str, object]
+) -> None:
+    status, _, content = request(
+        api_server,
+        "POST",
+        "/v1/chat/completions",
+        {
+            "model": "local-code-worker/local",
+            "messages": [{"role": "user", "content": "hello"}],
+            **extra,
+        },
     )
 
     assert status == 400
