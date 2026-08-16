@@ -377,6 +377,35 @@ def test_ollama_chat_think_false_wins_over_level() -> None:
     assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
 
 
+def test_ollama_chat_sends_repeat_penalty_and_seed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        options = json.loads(request.content)["options"]
+        # .env-only sampling knobs are forwarded to Ollama when set.
+        assert options["repeat_penalty"] == 1.1
+        assert options["seed"] == 42
+        return httpx.Response(200, text='{"message":{"content":"ok"},"done":true}\n')
+
+    provider = OllamaProvider(
+        ollama_settings(llm_repeat_penalty=1.1, llm_seed=42),
+        httpx.MockTransport(handler),
+    )
+    assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
+
+
+def test_ollama_chat_omits_sampling_knobs_by_default() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        options = json.loads(request.content)["options"]
+        assert "repeat_penalty" not in options
+        assert "seed" not in options
+        return httpx.Response(200, text='{"message":{"content":"ok"},"done":true}\n')
+
+    provider = OllamaProvider(
+        ollama_settings(),
+        httpx.MockTransport(handler),
+    )
+    assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
+
+
 def test_ollama_chat_captures_thinking() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

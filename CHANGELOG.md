@@ -38,6 +38,9 @@ derived from project metadata and commit history.
   chain-of-thought. It is forwarded to Ollama as the `think` level (Ollama accepts levels in
   addition to booleans); `think:false` still wins over a level. The routing UI exposes it as a
   slider (авто → max) under the Think dropdown.
+- Added `.env`-only sampling knobs (no UI): `LLM_REPEAT_PENALTY` (repeat penalty to fight
+  repetition and thinking loops) and `LLM_SEED` (fixed random seed for reproducible generation).
+  Both are forwarded to Ollama `options` only when set.
 
 ### Changed
 

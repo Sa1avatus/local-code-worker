@@ -516,6 +516,11 @@ class OllamaProvider:
         }
         if max_output_tokens is not None:
             options["num_predict"] = max_output_tokens
+        # .env-only sampling knobs (no UI): forwarded only when set.
+        if self.settings.llm_repeat_penalty is not None:
+            options["repeat_penalty"] = self.settings.llm_repeat_penalty
+        if self.settings.llm_seed is not None:
+            options["seed"] = self.settings.llm_seed
         request_body: dict[str, object] = {
             "model": self.settings.llm_model,
             "stream": stream,

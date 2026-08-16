@@ -46,6 +46,10 @@ class WorkerSettings(BaseSettings):
     # None = model default (or plain `think: true`); a level forces thinking at
     # that depth, budgeting how much of the output goes to the chain-of-thought.
     llm_think_level: Literal["low", "medium", "high", "max"] | None = None
+    # Sampling knobs configured via .env only (no UI). repeat_penalty fights
+    # repetition/thinking loops; seed makes generation reproducible.
+    llm_repeat_penalty: float | None = Field(default=None, gt=0)
+    llm_seed: int | None = None
     llm_unload_policy: str = "immediate"  # "immediate", "never", or minutes like "5", "10", "30"
     ollama_base_url: HttpUrl | None = None
     ollama_model: str | None = None
