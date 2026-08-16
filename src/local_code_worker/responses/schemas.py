@@ -134,6 +134,7 @@ class ResponseOutputMessage(StrictModel):
     status: Literal["completed", "incomplete"]
     role: Literal["assistant"] = "assistant"
     content: list[ResponseOutputText]
+    reasoning: str | None = None
 
 
 class ResponseFunctionCall(StrictModel):

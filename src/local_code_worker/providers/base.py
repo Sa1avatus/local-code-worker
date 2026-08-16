@@ -72,6 +72,7 @@ class ProviderResult(StrictModel):
     provider: ProviderName
     model: str = Field(min_length=1)
     content: str
+    reasoning: str | None = None
     finish_reason: str | None = None
     usage: TokenUsage = Field(default_factory=TokenUsage)
     function_calls: list[ProviderFunctionCall] = Field(default_factory=list)

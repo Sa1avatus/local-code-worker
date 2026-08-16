@@ -613,6 +613,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         created = int(time.time())
         finish_reason = metadata.finish_reason if metadata and metadata.finish_reason else "stop"
         usage = metadata.usage if metadata else {}
+        reasoning = metadata.reasoning if metadata else None
         normalized_usage = {
             "prompt_tokens": int(usage.get("prompt_tokens", 0)),
             "completion_tokens": int(usage.get("completion_tokens", 0)),
@@ -628,7 +629,11 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                     "choices": [
                         {
                             "index": 0,
-                            "delta": {"role": "assistant", "content": content},
+                            "delta": {
+                                "role": "assistant",
+                                "content": content,
+                                **({"reasoning_content": reasoning} if reasoning else {}),
+                            },
                             "finish_reason": None,
                         }
                     ],
@@ -661,7 +666,11 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": content},
+                        "message": {
+                            "role": "assistant",
+                            "content": content,
+                            **({"reasoning_content": reasoning} if reasoning else {}),
+                        },
                         "finish_reason": finish_reason,
                     }
                 ],

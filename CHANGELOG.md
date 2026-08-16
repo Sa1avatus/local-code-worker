@@ -37,6 +37,16 @@ derived from project metadata and commit history.
   without an `Authorization` header instead of failing, letting servers that allow
   unauthenticated discovery respond.
 
+### Fixed
+
+- Forwarded the Ollama `thinking` trace through the gateway: it is now surfaced as
+  `reasoning_content` on `/v1/chat/completions` messages and as `reasoning` on the `/v1/responses`
+  output message, so reasoning models show their thinking to the client instead of silently
+  dropping it.
+- Reasoning models no longer produce empty answers: the gateway stopped sending `temperature 0`
+  to thinking models (unless `think` is explicitly `false`), which made qwen3.x thinking loop
+  until the output budget was exhausted. Thinking-enabled requests now use a non-zero temperature.
+
 ## [1.2.0] - 2026-08-15
 
 ### Added

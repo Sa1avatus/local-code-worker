@@ -30,6 +30,7 @@ def build_response(
                 id=message_id or f"msg_{uuid4().hex}",
                 status="completed",
                 content=[ResponseOutputText(text=result.content)],
+                reasoning=result.reasoning,
             )
         )
     item_ids = function_call_item_ids or []

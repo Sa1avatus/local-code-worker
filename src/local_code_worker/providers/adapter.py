@@ -61,6 +61,7 @@ class CanonicalProviderAdapter:
             provider=metadata.provider,
             model=metadata.model,
             content=content,
+            reasoning=metadata.reasoning,
             finish_reason=metadata.finish_reason,
             function_calls=[
                 ProviderFunctionCall(

@@ -159,6 +159,7 @@ class GenerationMetadata(StrictModel):
     usage: dict[str, int] = Field(default_factory=dict)
     time_to_first_token_ms: float | None = Field(default=None, ge=0)
     function_calls: list["FunctionCallMetadata"] = Field(default_factory=list)
+    reasoning: str | None = None
 
 
 class FunctionCallMetadata(StrictModel):

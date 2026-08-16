@@ -278,6 +278,51 @@ def test_ollama_chat_omits_think_when_not_configured() -> None:
     assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
 
 
+def test_ollama_chat_captures_thinking() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text='{"message":{"content":"ok","thinking":"step 1 step 2"},'
+            '"done":true,"eval_count":5,"prompt_eval_count":10}\n',
+        )
+
+    provider = OllamaProvider(
+        ollama_settings(llm_think=True),
+        httpx.MockTransport(handler),
+    )
+    assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
+    assert provider.last_generation_metadata is not None
+    assert provider.last_generation_metadata.reasoning == "step 1 step 2"
+
+
+def test_ollama_chat_uses_nonzero_temperature_when_thinking_enabled() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        options = json.loads(request.content)["options"]
+        # Greedy decoding makes qwen3.x thinking loop; a non-zero temperature is
+        # required whenever thinking is not explicitly disabled.
+        assert options["temperature"] == 0.6
+        return httpx.Response(200, text='{"message":{"content":"ok"},"done":true}\n')
+
+    provider = OllamaProvider(
+        ollama_settings(llm_think=True, llm_temperature=0),
+        httpx.MockTransport(handler),
+    )
+    assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
+
+
+def test_ollama_chat_keeps_zero_temperature_when_thinking_disabled() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        options = json.loads(request.content)["options"]
+        assert options["temperature"] == 0
+        return httpx.Response(200, text='{"message":{"content":"ok"},"done":true}\n')
+
+    provider = OllamaProvider(
+        ollama_settings(llm_think=False, llm_temperature=0),
+        httpx.MockTransport(handler),
+    )
+    assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
+
+
 def test_ollama_chat_sends_num_parallel_when_configured() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         options = json.loads(request.content)["options"]

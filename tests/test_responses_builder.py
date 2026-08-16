@@ -43,6 +43,7 @@ def test_build_response_maps_provider_text_and_usage() -> None:
                 "annotations": [],
             }
         ],
+        "reasoning": None,
     }
     assert response.usage is not None
     assert response.usage.model_dump() == {
@@ -52,6 +53,22 @@ def test_build_response_maps_provider_text_and_usage() -> None:
         "output_tokens_details": {"reasoning_tokens": 2},
         "total_tokens": 14,
     }
+
+
+def test_build_response_forwards_reasoning() -> None:
+    result = ProviderResult(
+        provider=ProviderName.OLLAMA,
+        model="qwen:test",
+        content="four",
+        reasoning="The user asked for two plus two.",
+        finish_reason="stop",
+        usage=TokenUsage(input_tokens=10, output_tokens=4, provenance=UsageProvenance.EXACT),
+        latency_ms=25,
+    )
+
+    response = build_response(result, message_id="msg_test")
+
+    assert response.output[0].reasoning == "The user asked for two plus two."
 
 
 def test_build_response_maps_function_call_output() -> None:

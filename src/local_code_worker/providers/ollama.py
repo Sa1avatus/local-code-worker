@@ -282,7 +282,7 @@ class OllamaProvider:
         finish_reason: str | None = None
         try:
             with self._client() as client:
-                content, finish_reason, usage, function_calls = self._non_stream_chat(
+                content, finish_reason, usage, function_calls, reasoning = self._non_stream_chat(
                     client, request_body, max_output_characters
                 )
         except httpx.ConnectError as error:
@@ -322,6 +322,7 @@ class OllamaProvider:
             finish_reason=finish_reason,
             usage=usage,
             function_calls=function_calls,
+            reasoning=reasoning,
         )
         return content
 
@@ -340,6 +341,7 @@ class OllamaProvider:
             stream=True,
         )
         parts: list[str] = []
+        reasoning_parts: list[str] = []
         total = 0
         finish_reason: str | None = None
         saw_done = False
@@ -377,6 +379,9 @@ class OllamaProvider:
                                 category=_ollama_error_category(request_body),
                             )
                         text = chunk.get("message", {}).get("content", "")
+                        thinking = chunk.get("message", {}).get("thinking", "")
+                        if isinstance(thinking, str) and thinking:
+                            reasoning_parts.append(thinking)
                         if chunk.get("message", {}).get("tool_calls"):
                             for tc in _parse_ollama_function_calls(chunk["message"]):
                                 pending_function_calls.append(
@@ -457,6 +462,7 @@ class OllamaProvider:
             response_format_mode=request.json_mode,
             finish_reason=finish_reason,
             usage=usage,
+            reasoning="".join(reasoning_parts) or None,
             time_to_first_token_ms=(
                 (first_token_at - started) * 1000 if first_token_at is not None else None
             ),
@@ -486,8 +492,15 @@ class OllamaProvider:
         *,
         stream: bool,
     ) -> dict[str, object]:
+        temperature = self.settings.llm_temperature
+        if self.settings.llm_think is not False and temperature <= 0:
+            # Reasoning models (qwen3.x) degenerate into a looping thinking trace
+            # under greedy decoding (temperature 0), exhausting num_predict before
+            # any answer. Thinking requires sampling, so fall back to a non-zero
+            # temperature whenever thinking is not explicitly disabled.
+            temperature = 0.6
         options: dict[str, object] = {
-            "temperature": self.settings.llm_temperature,
+            "temperature": temperature,
             "num_ctx": self.settings.llm_num_ctx,
             "num_parallel": self.settings.llm_num_parallel,
         }
@@ -516,7 +529,7 @@ class OllamaProvider:
 
     def _non_stream_chat(
         self, client: httpx.Client, request_body: dict[str, object], limit: int
-    ) -> tuple[str, str | None, dict[str, int], list[FunctionCallMetadata]]:
+    ) -> tuple[str, str | None, dict[str, int], list[FunctionCallMetadata], str | None]:
         response = client.post(f"{self.base_url}/api/chat", json=request_body)
         response.raise_for_status()
         try:
@@ -539,7 +552,16 @@ class OllamaProvider:
                 category="output_limit",
             )
         function_calls = _parse_ollama_function_calls(payload.get("message"))
-        return content, payload.get("done_reason"), _parse_usage(payload), function_calls
+        thinking = (
+            payload.get("message", {}).get("thinking") if isinstance(payload, dict) else None
+        )
+        return (
+            content,
+            payload.get("done_reason"),
+            _parse_usage(payload),
+            function_calls,
+            thinking if isinstance(thinking, str) else None,
+        )
 
     def generate(self, system_prompt: str, user_context: str, max_output_characters: int) -> str:
         from ..models import ModelImplementationResponse
