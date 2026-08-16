@@ -46,6 +46,13 @@ derived from project metadata and commit history.
 - Reasoning models no longer produce empty answers: the gateway stopped sending `temperature 0`
   to thinking models (unless `think` is explicitly `false`), which made qwen3.x thinking loop
   until the output budget was exhausted. Thinking-enabled requests now use a non-zero temperature.
+- Reasoning now streams LIVE instead of buffering until the answer finishes: `OllamaProvider`
+  emits a new `ProviderReasoningDeltaEvent` for every `thinking` token, forwarded as
+  `reasoning_content` SSE deltas on `/v1/chat/completions` (arriving before the first `content`
+  delta, like the Ollama UI). The chat-completion streaming path now drives a real provider stream
+  with fallback-before-first-byte, rather than emitting a single buffered chunk. The
+  `/v1/responses` stream accumulates the same deltas onto the completed output message's
+  `reasoning` field.
 
 ## [1.2.0] - 2026-08-15
 

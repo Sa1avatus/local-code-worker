@@ -16,6 +16,7 @@ from local_code_worker.models import (
 )
 from local_code_worker.providers.base import (
     ProviderCompletedEvent,
+    ProviderReasoningDeltaEvent,
     ProviderStartedEvent,
     ProviderTextDeltaEvent,
     ProviderUsageEvent,
@@ -29,6 +30,7 @@ class FakeProvider:
     failing_models: set[str] = set()
     attempted_models: list[str] = []
     streamed_models: list[str] = []
+    emit_reasoning = False
 
     def __init__(self, settings: WorkerSettings):
         self.settings = settings
@@ -92,8 +94,16 @@ class FakeProvider:
         )
         if request.messages[-1].content == "trigger error":
             raise ProviderError("stream failed", category="test_error")
-        yield ProviderTextDeltaEvent(sequence=1, delta="ok")
-        yield ProviderUsageEvent(sequence=2, usage=TokenUsage(input_tokens=1, output_tokens=1))
+        sequence = 1
+        if FakeProvider.emit_reasoning:
+            yield ProviderReasoningDeltaEvent(sequence=sequence, delta="thinking...")
+            sequence += 1
+        yield ProviderTextDeltaEvent(sequence=sequence, delta="ok")
+        sequence += 1
+        yield ProviderUsageEvent(
+            sequence=sequence, usage=TokenUsage(input_tokens=1, output_tokens=1)
+        )
+        sequence += 1
         self.last_generation_metadata = GenerationMetadata(
             provider=ProviderName.OLLAMA,
             model=self.settings.llm_model,
@@ -107,7 +117,7 @@ class FakeProvider:
             response_format_mode=self.settings.llm_json_mode,
             finish_reason="stop",
         )
-        yield ProviderCompletedEvent(sequence=3, finish_reason="stop")
+        yield ProviderCompletedEvent(sequence=sequence, finish_reason="stop")
 
 
 @pytest.fixture
@@ -771,6 +781,27 @@ def test_chat_completions_supports_sse_shape(api_server: int) -> None:
     assert status == 200
     assert content_type == "text/event-stream; charset=utf-8"
     assert '"object": "chat.completion.chunk"' in content
+    assert content.endswith("data: [DONE]\n\n")
+
+
+def test_chat_completions_streams_reasoning_before_content(api_server: int) -> None:
+    FakeProvider.emit_reasoning = True
+    try:
+        status, content_type, content = request(
+            api_server,
+            "POST",
+            "/v1/chat/completions",
+            {"messages": [{"role": "user", "content": "hello"}], "stream": True},
+        )
+    finally:
+        FakeProvider.emit_reasoning = False
+
+    assert status == 200
+    assert content_type == "text/event-stream; charset=utf-8"
+    # Live reasoning must arrive as reasoning_content deltas BEFORE the first
+    # content token, not buffered into the final chunk.
+    assert '"reasoning_content"' in content
+    assert content.index("reasoning_content") < content.index('"content": "ok"')
     assert content.endswith("data: [DONE]\n\n")
 
 

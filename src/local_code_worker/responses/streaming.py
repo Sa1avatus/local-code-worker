@@ -7,6 +7,7 @@ from ..models import ProviderName, StrictModel
 from ..providers.base import (
     ProviderCompletedEvent,
     ProviderEvent,
+    ProviderReasoningDeltaEvent,
     ProviderResult,
     ProviderTextDeltaEvent,
     ProviderUsageEvent,
@@ -59,6 +60,7 @@ def map_provider_events(
     """
     sequence = start_sequence
     text_parts: list[str] = []
+    reasoning_parts: list[str] = []
     usage = TokenUsage()
     finish_reason: str | None = None
 
@@ -114,6 +116,8 @@ def map_provider_events(
             sequence += 1
         elif isinstance(event, ProviderUsageEvent):
             usage = event.usage
+        elif isinstance(event, ProviderReasoningDeltaEvent):
+            reasoning_parts.append(event.delta)
         elif isinstance(event, ProviderCompletedEvent):
             finish_reason = event.finish_reason
 
@@ -155,6 +159,7 @@ def map_provider_events(
             provider=provider,
             model=model,
             content=full_text,
+            reasoning="".join(reasoning_parts) or None,
             finish_reason=finish_reason,
             usage=usage,
             latency_ms=0,

@@ -25,6 +25,7 @@ from .base import (
     ProviderFunctionTool,
     ProviderFunctionToolChoice,
     ProviderMessage,
+    ProviderReasoningDeltaEvent,
     ProviderRequest,
     ProviderStartedEvent,
     ProviderTextDeltaEvent,
@@ -382,6 +383,11 @@ class OllamaProvider:
                         thinking = chunk.get("message", {}).get("thinking", "")
                         if isinstance(thinking, str) and thinking:
                             reasoning_parts.append(thinking)
+                            # Stream reasoning live so the client can render the
+                            # chain-of-thought as it is produced (Ollama emits
+                            # `thinking` tokens before the first content token).
+                            yield ProviderReasoningDeltaEvent(sequence=sequence, delta=thinking)
+                            sequence += 1
                         if chunk.get("message", {}).get("tool_calls"):
                             for tc in _parse_ollama_function_calls(chunk["message"]):
                                 pending_function_calls.append(

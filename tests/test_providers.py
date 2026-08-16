@@ -13,6 +13,7 @@ from local_code_worker.providers.base import (
     ProviderFunctionTool,
     ProviderFunctionToolChoice,
     ProviderMessage,
+    ProviderReasoningDeltaEvent,
     ProviderRequest,
     ProviderTextDeltaEvent,
     ProviderUsageEvent,
@@ -166,6 +167,48 @@ def test_ollama_stream_emits_ordered_events_and_ttft() -> None:
     assert usage_event.usage.total_tokens == 3
     assert provider.last_generation_metadata is not None
     assert provider.last_generation_metadata.time_to_first_token_ms is not None
+
+
+def test_ollama_stream_emits_reasoning_before_content() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    '{"message":{"thinking":"Let me "},"done":false}',
+                    '{"message":{"thinking":"think."},"done":false}',
+                    '{"message":{"content":"answer"},"done":false}',
+                    '{"message":{"content":""},"done":true,"done_reason":"stop"}',
+                ]
+            ),
+        )
+    )
+    provider = OllamaProvider(ollama_settings(), transport)
+    request = ProviderRequest(
+        messages=[ProviderMessage(role="user", content="hello")],
+        max_output_characters=100,
+        json_mode=JsonMode.AUTO,
+        stream=True,
+    )
+
+    events = list(provider.stream(request))
+
+    validate_event_sequence(events)
+    reasoning = [event.delta for event in events if isinstance(event, ProviderReasoningDeltaEvent)]
+    content = [event.delta for event in events if isinstance(event, ProviderTextDeltaEvent)]
+    assert reasoning == ["Let me ", "think."]
+    assert content == ["answer"]
+    reasoning_positions = [
+        index for index, event in enumerate(events)
+        if isinstance(event, ProviderReasoningDeltaEvent)
+    ]
+    content_positions = [
+        index for index, event in enumerate(events)
+        if isinstance(event, ProviderTextDeltaEvent)
+    ]
+    assert max(reasoning_positions) < min(content_positions)
+    assert provider.last_generation_metadata is not None
+    assert provider.last_generation_metadata.reasoning == "Let me think."
 
 
 def test_ollama_stream_cancellation_closes_http_stream() -> None:

@@ -3,6 +3,7 @@ import json
 from local_code_worker.models import ProviderName
 from local_code_worker.providers.base import (
     ProviderCompletedEvent,
+    ProviderReasoningDeltaEvent,
     ProviderStartedEvent,
     ProviderTextDeltaEvent,
     ProviderUsageEvent,
@@ -115,3 +116,44 @@ def test_map_provider_events_continuation_skips_preamble() -> None:
     assert completed.type == "response.completed"
     assert completed.response is not None
     assert completed.response.output_text == "hello world"
+
+
+def test_map_provider_events_forwards_reasoning_to_completed() -> None:
+    provider_events = [
+        ProviderStartedEvent(
+            sequence=0,
+            provider=ProviderName.OLLAMA,
+            model="qwen:test",
+        ),
+        ProviderReasoningDeltaEvent(sequence=1, delta="think "),
+        ProviderReasoningDeltaEvent(sequence=2, delta="aloud"),
+        ProviderTextDeltaEvent(sequence=3, delta="answer"),
+        ProviderUsageEvent(
+            sequence=4,
+            usage=TokenUsage(
+                input_tokens=2,
+                output_tokens=1,
+                provenance=UsageProvenance.EXACT,
+            ),
+        ),
+        ProviderCompletedEvent(sequence=5, finish_reason="stop"),
+    ]
+
+    events = list(
+        map_provider_events(
+            provider_events,
+            provider=ProviderName.OLLAMA,
+            model="qwen:test",
+            response_id="resp_test",
+            message_id="msg_test",
+            created_at=1_786_233_600,
+        )
+    )
+
+    completed = events[-1]
+    assert completed.type == "response.completed"
+    assert completed.response is not None
+    assert completed.response.output_text == "answer"
+    # Reasoning deltas are accumulated onto the output message (not streamed
+    # as separate SSE events, matching the non-stream Responses shape).
+    assert completed.response.output[0].reasoning == "think aloud"

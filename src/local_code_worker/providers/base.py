@@ -93,6 +93,18 @@ class ProviderTextDeltaEvent(StrictModel):
     delta: str = Field(min_length=1)
 
 
+class ProviderReasoningDeltaEvent(StrictModel):
+    """Emitted for a live reasoning/thinking token (e.g. Ollama ``thinking``).
+
+    Streamed BEFORE the first text delta so clients can render the model's
+    chain-of-thought in real time rather than receiving it buffered at the end.
+    """
+
+    type: Literal["reasoning_delta"] = "reasoning_delta"
+    sequence: int = Field(ge=0)
+    delta: str = Field(min_length=1)
+
+
 class ProviderUsageEvent(StrictModel):
     type: Literal["usage"] = "usage"
     sequence: int = Field(ge=0)
@@ -116,6 +128,7 @@ class ProviderToolCallsEvent(StrictModel):
 ProviderEvent: TypeAlias = (
     ProviderStartedEvent
     | ProviderTextDeltaEvent
+    | ProviderReasoningDeltaEvent
     | ProviderToolCallsEvent
     | ProviderUsageEvent
     | ProviderCompletedEvent

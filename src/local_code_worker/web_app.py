@@ -23,10 +23,15 @@ from .models import JsonMode, ProviderName
 from .providers import create_provider
 from .providers.adapter import CanonicalProviderAdapter
 from .providers.base import (
+    ProviderCompletedEvent,
     ProviderFunctionCall,
     ProviderMessage,
+    ProviderReasoningDeltaEvent,
     ProviderRequest,
+    ProviderStartedEvent,
+    ProviderTextDeltaEvent,
     ProviderToolCallsEvent,
+    ProviderUsageEvent,
 )
 from .providers.ollama import OllamaProvider
 from .request_limits import RequestLimits, load_request_limits
@@ -529,7 +534,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             max_output_characters=settings.llm_max_output_characters,
             max_output_tokens=settings.llm_max_output_tokens,
             json_mode=settings.llm_json_mode,
-            stream=False,
+            stream=stream,
         )
         routing_settings = load_gateway_routing_settings(self.env_path)
         routellm_backend = (
@@ -567,6 +572,129 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         lease.route = routing_plan.actual.tier.value
         if isinstance(provider, OllamaProvider):
             lease.idle_cleanup = provider.unload_model
+
+        if stream:
+            # Obtain the first provider event BEFORE sending SSE headers so a
+            # failed model load can still fall back to another tier (headers,
+            # once written, cannot be retried).
+            while True:
+                provider_events = iter(provider.stream(provider_request))
+                try:
+                    first_event = next(provider_events)
+                    break
+                except (ProviderError, WorkerError, OSError):
+                    record_model_call(
+                        provider.last_generation_metadata,
+                        kind="chat",
+                        outcome="failed",
+                        tier=routing_plan.actual.tier.value,
+                    )
+                    fallback = resolve_gateway_fallback(
+                        settings,
+                        routing_settings,
+                        provider_request,
+                        routing_plan.actual.tier,
+                    )
+                    if fallback is None:
+                        record_routing_plan(response_id, routing_plan)
+                        raise
+                    settings, routing_plan = fallback
+                    if client_context_length is not None:
+                        settings = settings.model_copy(
+                            update={"llm_num_ctx": client_context_length}
+                        )
+                    if client_think is not None:
+                        settings = settings.model_copy(update={"llm_think": client_think})
+                    settings = self._settings_with_tier_secret(settings)
+                    provider = create_provider(settings)
+                    lease.model = settings.llm_model
+                    lease.route = routing_plan.actual.tier.value
+                    if isinstance(provider, OllamaProvider):
+                        lease.idle_cleanup = provider.unload_model
+                except StopIteration as error:
+                    raise ProviderError(
+                        "provider stream ended before the first event",
+                        category="empty_stream",
+                    ) from error
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+            completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+            created = int(time.time())
+            usage: dict[str, int] | None = None
+            finish_reason: str | None = None
+
+            def _chunk(delta: dict[str, object], finish: str | None = None) -> None:
+                payload: dict[str, object] = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": public_model,
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                }
+                self.wfile.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode())
+                self.wfile.flush()
+
+            try:
+                for event in chain([first_event], provider_events):
+                    if isinstance(event, ProviderStartedEvent):
+                        _chunk({"role": "assistant"})
+                    elif isinstance(event, ProviderReasoningDeltaEvent):
+                        # Live reasoning arrives before the first content token;
+                        # forward it as reasoning_content so clients render the
+                        # chain-of-thought as it streams.
+                        _chunk({"reasoning_content": event.delta})
+                    elif isinstance(event, ProviderTextDeltaEvent):
+                        _chunk({"content": event.delta})
+                    elif isinstance(event, ProviderUsageEvent):
+                        usage = {
+                            "prompt_tokens": event.usage.input_tokens,
+                            "completion_tokens": event.usage.output_tokens,
+                            "total_tokens": event.usage.total_tokens,
+                        }
+                    elif isinstance(event, ProviderCompletedEvent):
+                        finish_reason = event.finish_reason
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except (ProviderError, WorkerError, OSError) as error:
+                record_model_call(
+                    provider.last_generation_metadata,
+                    kind="chat",
+                    outcome="failed",
+                    tier=routing_plan.actual.tier.value,
+                )
+                self.wfile.write(
+                    f"data: {json.dumps({'error': {'message': str(error), 'type': 'server_error'}}, ensure_ascii=False)}\n\n".encode()
+                )
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+                return
+
+            final_chunk: dict[str, object] = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": public_model,
+                "choices": [
+                    {"index": 0, "delta": {}, "finish_reason": finish_reason or "stop"}
+                ],
+            }
+            if usage:
+                final_chunk["usage"] = usage
+            self.wfile.write(
+                f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n".encode()
+            )
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            record_model_call(
+                provider.last_generation_metadata, kind="chat", outcome="completed"
+            )
+            return
+
         try:
             content = provider.chat(
                 messages,
@@ -619,43 +747,6 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             "completion_tokens": int(usage.get("completion_tokens", 0)),
             "total_tokens": int(usage.get("total_tokens", 0)),
         }
-        if stream:
-            chunks = [
-                {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": public_model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {
-                                "role": "assistant",
-                                "content": content,
-                                **({"reasoning_content": reasoning} if reasoning else {}),
-                            },
-                            "finish_reason": None,
-                        }
-                    ],
-                },
-                {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": public_model,
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                },
-            ]
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            for chunk in chunks:
-                self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
-            self.wfile.write(b"data: [DONE]\n\n")
-            self.wfile.flush()
-            return
         self._send_json(
             HTTPStatus.OK,
             {
