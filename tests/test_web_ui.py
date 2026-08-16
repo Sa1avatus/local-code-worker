@@ -163,6 +163,11 @@ def test_routing_ui_has_per_tier_think_field() -> None:
     # tierPayload sends both fields derived from the dropdown value
     assert "show_reasoning=(tv==='show')?true:(tv==='hide'?false:null)" in INDEX_HTML
     assert "think:think,show_reasoning:show_reasoning" in INDEX_HTML
+    # think-level slider (low -> max) sits under the Think field
+    assert 'id="${name}ThinkLevel" type="range" min="0" max="4"' in INDEX_HTML
+    assert "Уровень размышлений" in INDEX_HTML
+    assert "thinkLevels=['low','medium','high','max']" in INDEX_HTML
+    assert "think_level:think_level" in INDEX_HTML
 
 
 def test_routing_dashboard_renders_status_metrics() -> None:

@@ -44,6 +44,8 @@ def _apply_decision(
             updates["llm_think"] = tier_config.think
         if tier_config.show_reasoning is not None:
             updates["llm_show_reasoning"] = tier_config.show_reasoning
+        if tier_config.think_level is not None:
+            updates["llm_think_level"] = tier_config.think_level
         updates["llm_num_parallel"] = tier_config.num_parallel
         updates["llm_api_key"] = None
         updates["llm_api_key_env"] = tier_config.api_key_env

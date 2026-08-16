@@ -33,6 +33,11 @@ derived from project metadata and commit history.
   `reasoning_content`/`reasoning`; `false` hides the chain-of-thought while the model still thinks
   internally (like OpenAI o-series). `OllamaProvider` drops reasoning deltas and the metadata
   `reasoning` field when it is `false`.
+- Added a per-tier `think_level` setting (`low`/`medium`/`high`/`max`, stored as
+  `GATEWAY_<TIER>_THINK_LEVEL`) that controls how much of the output budget the model spends on its
+  chain-of-thought. It is forwarded to Ollama as the `think` level (Ollama accepts levels in
+  addition to booleans); `think:false` still wins over a level. The routing UI exposes it as a
+  slider (авто → max) under the Think dropdown.
 
 ### Changed
 

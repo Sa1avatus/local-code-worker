@@ -1,4 +1,5 @@
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field, HttpUrl, model_validator
 
@@ -77,6 +78,9 @@ class TierConfig(StrictModel):
     # Whether to surface the model's reasoning trace to the client. None or True
     # forward it, False hides it (the model still thinks internally).
     show_reasoning: bool | None = None
+    # Thinking intensity level (low/medium/high/max) forwarded as the `think`
+    # level to Ollama. None = model default; set to force a specific depth.
+    think_level: Literal["low", "medium", "high", "max"] | None = None
     # Optional output budget for the routing capability check; defaults to a
     # generous ceiling so client budgets (e.g. matching extraction, 16k tokens)
     # are not rejected because the tier hardcoded a 4096-token capability.

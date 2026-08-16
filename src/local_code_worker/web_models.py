@@ -71,6 +71,7 @@ class RoutingTierSettingsInput(BaseModel):
     num_parallel: int = Field(default=1, ge=1, le=64)
     think: bool | None = None
     show_reasoning: bool | None = None
+    think_level: Literal["low", "medium", "high", "max"] | None = None
     api_key_action: Literal["keep", "replace", "clear"] = "keep"
     api_key: SecretStr | None = None
 

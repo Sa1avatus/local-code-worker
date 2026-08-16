@@ -523,10 +523,15 @@ class OllamaProvider:
             "messages": messages,
             "options": options,
         }
-        if self.settings.llm_think is not None:
-            # Reasoning models (qwen3.x) drain the token budget on thinking; the
-            # gateway lets the client decide per request. Absent = model default.
-            request_body["think"] = self.settings.llm_think
+        # Reasoning models (qwen3.x) drain the token budget on thinking; the
+        # gateway lets the client decide per request. Absent = model default.
+        # `think_level` (low/medium/high/max) forces thinking at that intensity.
+        if self.settings.llm_think is False:
+            request_body["think"] = False
+        elif self.settings.llm_think_level is not None:
+            request_body["think"] = self.settings.llm_think_level
+        elif self.settings.llm_think is True:
+            request_body["think"] = True
         mode = self.settings.llm_json_mode
         if mode is JsonMode.JSON_SCHEMA and response_schema is not None:
             request_body["format"] = response_schema

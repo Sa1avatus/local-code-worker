@@ -351,6 +351,32 @@ def test_ollama_chat_omits_think_when_not_configured() -> None:
     assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
 
 
+def test_ollama_chat_sends_think_level() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["think"] == "high"
+        return httpx.Response(200, text='{"message":{"content":"ok"},"done":true}\n')
+
+    provider = OllamaProvider(
+        ollama_settings(llm_think_level="high"),
+        httpx.MockTransport(handler),
+    )
+    assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
+
+
+def test_ollama_chat_think_false_wins_over_level() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["think"] is False
+        return httpx.Response(200, text='{"message":{"content":"ok"},"done":true}\n')
+
+    provider = OllamaProvider(
+        ollama_settings(llm_think=False, llm_think_level="high"),
+        httpx.MockTransport(handler),
+    )
+    assert provider.chat([{"role": "user", "content": "Say OK"}], None, 100, 32) == "ok"
+
+
 def test_ollama_chat_captures_thinking() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

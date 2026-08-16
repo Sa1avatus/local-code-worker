@@ -1,5 +1,6 @@
 from os import environ
 from pathlib import Path
+from typing import Literal
 
 from dotenv import dotenv_values
 from pydantic import Field, HttpUrl, SecretStr, field_validator, model_validator
@@ -41,6 +42,10 @@ class WorkerSettings(BaseSettings):
     # forward it (reasoning_content / reasoning); False hides it while the model
     # still thinks internally.
     llm_show_reasoning: bool | None = None
+    # Thinking intensity level for Ollama thinking models (low/medium/high/max).
+    # None = model default (or plain `think: true`); a level forces thinking at
+    # that depth, budgeting how much of the output goes to the chain-of-thought.
+    llm_think_level: Literal["low", "medium", "high", "max"] | None = None
     llm_unload_policy: str = "immediate"  # "immediate", "never", or minutes like "5", "10", "30"
     ollama_base_url: HttpUrl | None = None
     ollama_model: str | None = None

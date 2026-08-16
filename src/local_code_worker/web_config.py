@@ -72,6 +72,7 @@ def load_gateway_routing_settings(
                 num_parallel=_parse_optional_int(value(f"{prefix}_NUM_PARALLEL")) or 1,
                 think=_parse_optional_bool(value(f"{prefix}_THINK")),
                 show_reasoning=_parse_optional_bool(value(f"{prefix}_SHOW_REASONING")),
+                think_level=value(f"{prefix}_THINK_LEVEL"),
                 api_key_env=value(f"{prefix}_API_KEY_ENV"),
             )
 
@@ -118,6 +119,7 @@ def public_gateway_settings(env_path: Path = Path(".env")) -> dict[str, object]:
             "num_parallel": config.num_parallel,
             "think": config.think,
             "show_reasoning": config.show_reasoning,
+            "think_level": config.think_level,
             "api_key_configured": configured,
             "api_key_env": key_name,
         }
@@ -168,6 +170,10 @@ def save_gateway_settings(
             unset_key(path, f"{prefix}_SHOW_REASONING")
         else:
             set_key(path, f"{prefix}_SHOW_REASONING", str(config.show_reasoning).lower())
+        if config.think_level is None:
+            unset_key(path, f"{prefix}_THINK_LEVEL")
+        else:
+            set_key(path, f"{prefix}_THINK_LEVEL", config.think_level)
         if config.api_key_action == "replace":
             assert config.api_key is not None
             set_key(path, f"{prefix}_API_KEY_ENV", key_name)
