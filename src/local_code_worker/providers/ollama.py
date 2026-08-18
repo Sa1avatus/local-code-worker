@@ -300,6 +300,13 @@ class OllamaProvider:
         except httpx.HTTPStatusError as error:
             # Graceful degradation: if Ollama rejects tools (HTTP 400),
             # retry without them. Some models don't support tools.
+            import logging
+            logging.getLogger("local_code_worker.ollama").warning(
+                "Ollama HTTP %d, tools=%s, retry=%s",
+                error.response.status_code,
+                bool(tools),
+                tools and error.response.status_code == 400,
+            )
             if tools and error.response.status_code == 400:
                 request_body = self._request_body(
                     messages, response_schema, max_output_tokens,
