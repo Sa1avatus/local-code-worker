@@ -298,21 +298,6 @@ class OllamaProvider:
                 category="transport_error",
             ) from error
         except httpx.HTTPStatusError as error:
-            import logging
-            log = logging.getLogger("local_code_worker.ollama")
-            body_preview = ""
-            try:
-                body_preview = error.response.text[:300]
-            except Exception:
-                pass
-            log.warning(
-                "Ollama HTTP %d, tools=%s, model=%s, has_format=%s, body=%s",
-                error.response.status_code,
-                bool(tools),
-                self.settings.llm_model,
-                "format" in request_body,
-                body_preview,
-            )
             if error.response.status_code == 400:
                 # Graceful degradation: Ollama may reject tools or JSON
                 # grammar (format). Retry without whichever was sent.
@@ -331,20 +316,15 @@ class OllamaProvider:
                     else:
                         return content
                 if "format" in request_body:
-                    log.warning("Retrying without format field")
                     request_body.pop("format", None)
                     try:
                         with self._client() as client:
                             content, finish_reason, usage, function_calls, reasoning = (
                                 self._non_stream_chat(client, request_body, max_output_characters)
                             )
-                    except httpx.HTTPStatusError as retry_err:
-                        log.warning(
-                            "Retry without format failed: HTTP %d",
-                            retry_err.response.status_code,
-                        )
+                    except httpx.HTTPStatusError:
+                        pass
                     else:
-                        log.warning("Retry without format succeeded")
                         return content
             raise ProviderError(
                 f"Ollama returned HTTP {error.response.status_code}",
@@ -492,20 +472,6 @@ class OllamaProvider:
                     category="transport_error",
                 ) from error
             except httpx.HTTPStatusError as error:
-                import logging
-                log = logging.getLogger("local_code_worker.ollama")
-                body_preview = ""
-                try:
-                    body_preview = error.response.text[:300]
-                except Exception:
-                    pass
-                log.warning(
-                    "Ollama stream HTTP %d, tools=%s, model=%s, body=%s",
-                    error.response.status_code,
-                    bool(request.tools),
-                    self.settings.llm_model,
-                    body_preview,
-                )
                 if error.response.status_code == 400:
                     # Graceful degradation: strip tools, then format.
                     if retry_without_tools:
