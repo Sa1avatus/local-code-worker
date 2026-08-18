@@ -330,15 +330,20 @@ class OllamaProvider:
                     else:
                         return content
                 if "format" in request_body:
+                    log.info("Retrying without format field")
                     request_body.pop("format", None)
                     try:
                         with self._client() as client:
                             content, finish_reason, usage, function_calls, reasoning = (
                                 self._non_stream_chat(client, request_body, max_output_characters)
                             )
-                    except httpx.HTTPStatusError:
-                        pass
+                    except httpx.HTTPStatusError as retry_err:
+                        log.warning(
+                            "Retry without format failed: HTTP %d",
+                            retry_err.response.status_code,
+                        )
                     else:
+                        log.info("Retry without format succeeded")
                         return content
             raise ProviderError(
                 f"Ollama returned HTTP {error.response.status_code}",
