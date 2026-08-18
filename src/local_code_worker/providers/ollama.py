@@ -312,26 +312,38 @@ class OllamaProvider:
                 self.settings.llm_model,
                 body_preview,
             )
-            if tools and error.response.status_code == 400:
-                request_body = self._request_body(
-                    messages, response_schema, max_output_tokens,
-                    None, "auto", stream=False,
-                )
-                try:
-                    with self._client() as client:
-                        content, finish_reason, usage, function_calls, reasoning = (
-                            self._non_stream_chat(client, request_body, max_output_characters)
-                        )
-                except httpx.HTTPStatusError as retry_error:
-                    raise ProviderError(
-                        f"Ollama returned HTTP {retry_error.response.status_code}",
-                        category="http_error",
-                    ) from retry_error
-            else:
-                raise ProviderError(
-                    f"Ollama returned HTTP {error.response.status_code}",
-                    category="http_error",
-                ) from error
+            if error.response.status_code == 400:
+                # Graceful degradation: Ollama may reject tools or JSON
+                # grammar (format). Retry without whichever was sent.
+                if tools:
+                    request_body = self._request_body(
+                        messages, response_schema, max_output_tokens,
+                        None, "auto", stream=False,
+                    )
+                    try:
+                        with self._client() as client:
+                            content, finish_reason, usage, function_calls, reasoning = (
+                                self._non_stream_chat(client, request_body, max_output_characters)
+                            )
+                    except httpx.HTTPStatusError:
+                        pass  # fall through to final error
+                    else:
+                        return content
+                if "format" in request_body:
+                    request_body.pop("format", None)
+                    try:
+                        with self._client() as client:
+                            content, finish_reason, usage, function_calls, reasoning = (
+                                self._non_stream_chat(client, request_body, max_output_characters)
+                            )
+                    except httpx.HTTPStatusError:
+                        pass
+                    else:
+                        return content
+            raise ProviderError(
+                f"Ollama returned HTTP {error.response.status_code}",
+                category="http_error",
+            ) from error
 
         if tools and not function_calls:
             text_call = _parse_ollama_text_function_call(content, tools)
@@ -488,13 +500,19 @@ class OllamaProvider:
                     self.settings.llm_model,
                     body_preview,
                 )
-                if retry_without_tools and error.response.status_code == 400:
-                    request_body = self._request_body(
-                        messages, request.response_schema,
-                        request.max_output_tokens, None, "auto", stream=True,
-                    )
-                    retry_without_tools = False
-                    continue
+                if error.response.status_code == 400:
+                    # Graceful degradation: strip tools, then format.
+                    if retry_without_tools:
+                        request_body = self._request_body(
+                            messages, request.response_schema,
+                            request.max_output_tokens, None, "auto",
+                            stream=True,
+                        )
+                        retry_without_tools = False
+                        continue
+                    if "format" in request_body:
+                        request_body.pop("format", None)
+                        continue
                 raise ProviderError(
                     f"Ollama returned HTTP {error.response.status_code}",
                     category="http_error",
