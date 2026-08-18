@@ -298,14 +298,19 @@ class OllamaProvider:
                 category="transport_error",
             ) from error
         except httpx.HTTPStatusError as error:
-            # Graceful degradation: if Ollama rejects tools (HTTP 400),
-            # retry without them. Some models don't support tools.
             import logging
-            logging.getLogger("local_code_worker.ollama").warning(
-                "Ollama HTTP %d, tools=%s, retry=%s",
+            log = logging.getLogger("local_code_worker.ollama")
+            body_preview = ""
+            try:
+                body_preview = error.response.text[:300]
+            except Exception:
+                pass
+            log.warning(
+                "Ollama HTTP %d, tools=%s, model=%s, body=%s",
                 error.response.status_code,
                 bool(tools),
-                tools and error.response.status_code == 400,
+                self.settings.llm_model,
+                body_preview,
             )
             if tools and error.response.status_code == 400:
                 request_body = self._request_body(
@@ -469,6 +474,20 @@ class OllamaProvider:
                     category="transport_error",
                 ) from error
             except httpx.HTTPStatusError as error:
+                import logging
+                log = logging.getLogger("local_code_worker.ollama")
+                body_preview = ""
+                try:
+                    body_preview = error.response.text[:300]
+                except Exception:
+                    pass
+                log.warning(
+                    "Ollama stream HTTP %d, tools=%s, model=%s, body=%s",
+                    error.response.status_code,
+                    bool(request.tools),
+                    self.settings.llm_model,
+                    body_preview,
+                )
                 if retry_without_tools and error.response.status_code == 400:
                     request_body = self._request_body(
                         messages, request.response_schema,
