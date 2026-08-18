@@ -306,10 +306,11 @@ class OllamaProvider:
             except Exception:
                 pass
             log.warning(
-                "Ollama HTTP %d, tools=%s, model=%s, body=%s",
+                "Ollama HTTP %d, tools=%s, model=%s, has_format=%s, body=%s",
                 error.response.status_code,
                 bool(tools),
                 self.settings.llm_model,
+                "format" in request_body,
                 body_preview,
             )
             if error.response.status_code == 400:
