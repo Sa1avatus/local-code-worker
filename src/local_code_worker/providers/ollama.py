@@ -298,9 +298,28 @@ class OllamaProvider:
                 category="transport_error",
             ) from error
         except httpx.HTTPStatusError as error:
-            raise ProviderError(
-                f"Ollama returned HTTP {error.response.status_code}", category="http_error"
-            ) from error
+            # Graceful degradation: if Ollama rejects tools (HTTP 400),
+            # retry without them. Some models don't support tools.
+            if tools and error.response.status_code == 400:
+                request_body = self._request_body(
+                    messages, response_schema, max_output_tokens,
+                    None, "auto", stream=False,
+                )
+                try:
+                    with self._client() as client:
+                        content, finish_reason, usage, function_calls, reasoning = (
+                            self._non_stream_chat(client, request_body, max_output_characters)
+                        )
+                except httpx.HTTPStatusError as retry_error:
+                    raise ProviderError(
+                        f"Ollama returned HTTP {retry_error.response.status_code}",
+                        category="http_error",
+                    ) from retry_error
+            else:
+                raise ProviderError(
+                    f"Ollama returned HTTP {error.response.status_code}",
+                    category="http_error",
+                ) from error
 
         if tools and not function_calls:
             text_call = _parse_ollama_text_function_call(content, tools)
@@ -316,7 +335,9 @@ class OllamaProvider:
             started_at=started_at.isoformat(),
             completed_at=completed_at.isoformat(),
             duration_seconds=time.monotonic() - started,
-            prompt_characters=sum(len(message["content"]) for message in messages),
+            prompt_characters=sum(
+                len(message.get("content") or "") for message in messages
+            ),
             output_characters=len(content),
             streaming=self.settings.llm_stream,
             response_format_mode=mode,
@@ -358,87 +379,100 @@ class OllamaProvider:
             model=self.settings.llm_model,
         )
         sequence += 1
-        try:
-            with self._client() as client:
-                with client.stream(
-                    "POST", f"{self.base_url}/api/chat", json=request_body
-                ) as response:
-                    response.raise_for_status()
-                    for line in response.iter_lines():
-                        if not line.strip():
-                            continue
-                        try:
-                            chunk = json.loads(line)
-                        except json.JSONDecodeError as error:
-                            raise ProviderError(
-                                "Ollama returned an invalid NDJSON chunk",
-                                category="invalid_stream_chunk",
-                            ) from error
-                        if chunk.get("error") is not None:
-                            raise ProviderError(
-                                "Ollama rejected the streamed response",
-                                category=_ollama_error_category(request_body),
-                            )
-                        text = chunk.get("message", {}).get("content", "")
-                        thinking = chunk.get("message", {}).get("thinking", "")
-                        if (
-                            isinstance(thinking, str)
-                            and thinking
-                            and self.settings.llm_show_reasoning is not False
-                        ):
-                            reasoning_parts.append(thinking)
-                            # Stream reasoning live so the client can render the
-                            # chain-of-thought as it is produced (Ollama emits
-                            # `thinking` tokens before the first content token).
-                            yield ProviderReasoningDeltaEvent(sequence=sequence, delta=thinking)
-                            sequence += 1
-                        if chunk.get("message", {}).get("tool_calls"):
-                            for tc in _parse_ollama_function_calls(chunk["message"]):
-                                pending_function_calls.append(
-                                    ProviderFunctionCall(
-                                        call_id=tc.call_id,
-                                        name=tc.name,
-                                        arguments=tc.arguments,
-                                    )
+        # Retry loop: if Ollama rejects tools (HTTP 400), strip tools
+        # and retry so the model still responds.
+        retry_without_tools = request.tools and len(request.tools) > 0
+        while True:
+            try:
+                with self._client() as client:
+                    with client.stream(
+                        "POST", f"{self.base_url}/api/chat", json=request_body
+                    ) as response:
+                        response.raise_for_status()
+                        for line in response.iter_lines():
+                            if not line.strip():
+                                continue
+                            try:
+                                chunk = json.loads(line)
+                            except json.JSONDecodeError as error:
+                                raise ProviderError(
+                                    "Ollama returned an invalid NDJSON chunk",
+                                    category="invalid_stream_chunk",
+                                ) from error
+                            if chunk.get("error") is not None:
+                                raise ProviderError(
+                                    "Ollama rejected the streamed response",
+                                    category=_ollama_error_category(request_body),
                                 )
-                        if not isinstance(text, str):
-                            raise ProviderError(
-                                "Ollama stream chunk has invalid message.content",
-                                category="invalid_stream_chunk",
-                            )
-                        total += len(text)
-                        if total > request.max_output_characters:
-                            raise ProviderError(
-                                "Ollama output exceeds the "
-                                f"{request.max_output_characters}-character limit",
-                                category="output_limit",
-                            )
-                        if text:
-                            if first_token_at is None:
-                                first_token_at = time.monotonic()
-                            parts.append(text)
-                            yield ProviderTextDeltaEvent(sequence=sequence, delta=text)
-                            sequence += 1
-                        if chunk.get("done") is True:
-                            saw_done = True
-                            finish_reason = chunk.get("done_reason")
-                            usage = _parse_usage(chunk)
-                            break
-        except httpx.ConnectError as error:
-            raise ProviderError(
-                f"Cannot connect to Ollama at {self.base_url}", category="connection"
-            ) from error
-        except httpx.TimeoutException as error:
-            raise ProviderError("Ollama response timed out", category="timeout") from error
-        except httpx.TransportError as error:
-            raise ProviderError(
-                "Ollama response transport failed",
-                category="transport_error",
-            ) from error
-        except httpx.HTTPStatusError as error:
-            raise ProviderError(
-                f"Ollama returned HTTP {error.response.status_code}", category="http_error"
-            ) from error
+                            text = chunk.get("message", {}).get("content", "")
+                            thinking = chunk.get("message", {}).get("thinking", "")
+                            if (
+                                isinstance(thinking, str)
+                                and thinking
+                                and self.settings.llm_show_reasoning is not False
+                            ):
+                                reasoning_parts.append(thinking)
+                                # Stream reasoning live so the client can render the
+                                # chain-of-thought as it is produced (Ollama emits
+                                # `thinking` tokens before the first content token).
+                                yield ProviderReasoningDeltaEvent(sequence=sequence, delta=thinking)
+                                sequence += 1
+                            if chunk.get("message", {}).get("tool_calls"):
+                                for tc in _parse_ollama_function_calls(chunk["message"]):
+                                    pending_function_calls.append(
+                                        ProviderFunctionCall(
+                                            call_id=tc.call_id,
+                                            name=tc.name,
+                                            arguments=tc.arguments,
+                                        )
+                                    )
+                            if not isinstance(text, str):
+                                raise ProviderError(
+                                    "Ollama stream chunk has invalid message.content",
+                                    category="invalid_stream_chunk",
+                                )
+                            total += len(text)
+                            if total > request.max_output_characters:
+                                raise ProviderError(
+                                    "Ollama output exceeds the "
+                                    f"{request.max_output_characters}-character limit",
+                                    category="output_limit",
+                                )
+                            if text:
+                                if first_token_at is None:
+                                    first_token_at = time.monotonic()
+                                parts.append(text)
+                                yield ProviderTextDeltaEvent(sequence=sequence, delta=text)
+                                sequence += 1
+                            if chunk.get("done") is True:
+                                saw_done = True
+                                finish_reason = chunk.get("done_reason")
+                                usage = _parse_usage(chunk)
+                                break
+                break  # Success — exit retry loop
+            except httpx.ConnectError as error:
+                raise ProviderError(
+                    f"Cannot connect to Ollama at {self.base_url}", category="connection"
+                ) from error
+            except httpx.TimeoutException as error:
+                raise ProviderError("Ollama response timed out", category="timeout") from error
+            except httpx.TransportError as error:
+                raise ProviderError(
+                    "Ollama response transport failed",
+                    category="transport_error",
+                ) from error
+            except httpx.HTTPStatusError as error:
+                if retry_without_tools and error.response.status_code == 400:
+                    request_body = self._request_body(
+                        messages, request.response_schema,
+                        request.max_output_tokens, None, "auto", stream=True,
+                    )
+                    retry_without_tools = False
+                    continue
+                raise ProviderError(
+                    f"Ollama returned HTTP {error.response.status_code}",
+                    category="http_error",
+                ) from error
         if not saw_done:
             raise ProviderError(
                 "Ollama stream ended before a done chunk",
@@ -466,7 +500,9 @@ class OllamaProvider:
             started_at=started_at.isoformat(),
             completed_at=completed_at.isoformat(),
             duration_seconds=time.monotonic() - started,
-            prompt_characters=sum(len(message["content"]) for message in messages),
+            prompt_characters=sum(
+                len(message.get("content") or "") for message in messages
+            ),
             output_characters=len("".join(parts)),
             streaming=True,
             response_format_mode=request.json_mode,
