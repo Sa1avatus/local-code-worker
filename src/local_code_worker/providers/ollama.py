@@ -331,7 +331,7 @@ class OllamaProvider:
                     else:
                         return content
                 if "format" in request_body:
-                    log.info("Retrying without format field")
+                    log.warning("Retrying without format field")
                     request_body.pop("format", None)
                     try:
                         with self._client() as client:
@@ -344,7 +344,7 @@ class OllamaProvider:
                             retry_err.response.status_code,
                         )
                     else:
-                        log.info("Retry without format succeeded")
+                        log.warning("Retry without format succeeded")
                         return content
             raise ProviderError(
                 f"Ollama returned HTTP {error.response.status_code}",
