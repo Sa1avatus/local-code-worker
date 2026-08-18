@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -193,6 +194,21 @@ class OpenAICompatibleProvider:
                 tools,
                 tool_choice,
             )
+        except ProviderError as error:
+            # Graceful degradation: if the provider rejects tools (HTTP 400),
+            # retry without them so the model still responds. The XML
+            # fallback parser will catch any text-based tool calls.
+            if tools and error.category == "http_400":
+                return self._chat_once(
+                    messages,
+                    response_schema,
+                    max_output_characters,
+                    max_output_tokens,
+                    mode,
+                    None,
+                    "auto",
+                )
+            raise
 
     def _chat_once(
         self,
@@ -266,7 +282,9 @@ class OpenAICompatibleProvider:
             started_at=started_at.isoformat(),
             completed_at=completed_at.isoformat(),
             duration_seconds=time.monotonic() - started,
-            prompt_characters=sum(len(message["content"]) for message in messages),
+            prompt_characters=sum(
+                len(message.get("content") or "") for message in messages
+            ),
             output_characters=len(content),
             streaming=self.settings.llm_stream,
             response_format_mode=mode,
@@ -305,83 +323,108 @@ class OpenAICompatibleProvider:
             model=self.settings.llm_model,
         )
         sequence += 1
-        try:
-            with self._client() as client:
-                with client.stream(
-                    "POST", f"{self.base_url}/chat/completions", json=request_body
-                ) as response:
-                    response.raise_for_status()
-                    for line in response.iter_lines():
-                        if not line.strip() or line.startswith(":"):
-                            continue
-                        if not line.startswith("data:"):
-                            raise ProviderError(
-                                "Malformed SSE line", category="invalid_stream_chunk"
-                            )
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data)
-                            choices = chunk.get("choices", [])
-                            choice = choices[0] if choices else {}
-                            delta = choice.get("delta", {})
-                            if delta.get("tool_calls"):
-                                for tc_delta in delta["tool_calls"]:
-                                    idx = tc_delta.get("index", 0)
-                                    if idx not in tool_call_acc:
-                                        tool_call_acc[idx] = {"id": "", "name": "", "arguments": ""}
-                                    if tc_delta.get("id"):
-                                        tool_call_acc[idx]["id"] = tc_delta["id"]
-                                    fn = tc_delta.get("function", {})
-                                    if fn.get("name"):
-                                        tool_call_acc[idx]["name"] = fn["name"]
-                                    if fn.get("arguments"):
-                                        tool_call_acc[idx]["arguments"] += fn["arguments"]
-                            text = delta.get("content") or delta.get("refusal") or ""
-                        except (ValueError, TypeError, AttributeError) as error:
-                            raise ProviderError(
-                                "Malformed SSE JSON chunk",
-                                category="invalid_stream_chunk",
-                            ) from error
-                        if not isinstance(text, str):
-                            raise ProviderError(
-                                "Invalid SSE content", category="invalid_stream_chunk"
-                            )
-                        total += len(text)
-                        if total > request.max_output_characters:
-                            raise ProviderError(
-                                "Provider output exceeds "
-                                f"{request.max_output_characters} characters",
-                                category="output_limit",
-                            )
-                        if text:
-                            if first_token_at is None:
-                                first_token_at = time.monotonic()
-                            parts.append(text)
-                            yield ProviderTextDeltaEvent(sequence=sequence, delta=text)
-                            sequence += 1
-                        if choice.get("finish_reason") is not None:
-                            finish_reason = str(choice["finish_reason"])
-                        usage.update(_parse_usage(chunk.get("usage")))
-        except httpx.HTTPStatusError as error:
-            if self._is_unsupported_response_format(error.response, request_body):
-                raise _UnsupportedResponseFormat() from error
-            raise self._http_error(error.response) from error
-        except httpx.ConnectError as error:
-            raise ProviderError(
-                f"Cannot connect to OpenAI-compatible endpoint {self.base_url}",
-                category="connection",
-            ) from error
-        except httpx.TimeoutException as error:
-            raise ProviderError(
-                "OpenAI-compatible response timed out", category="timeout"
-            ) from error
-        except httpx.TransportError as error:
-            raise ProviderError(
-                "OpenAI-compatible response transport failed",
-                category="transport_error",
-            ) from error
+        # Retry loop: if the provider rejects tools (HTTP 400), strip tools
+        # and retry so the model still responds. The XML fallback parser will
+        # catch any text-based tool calls the model emits instead.
+        retry_without_tools = request.tools and len(request.tools) > 0
+        while True:
+            try:
+                with self._client() as client:
+                    with client.stream(
+                        "POST", f"{self.base_url}/chat/completions", json=request_body
+                    ) as response:
+                        response.raise_for_status()
+                        for line in response.iter_lines():
+                            if not line.strip() or line.startswith(":"):
+                                continue
+                            if not line.startswith("data:"):
+                                raise ProviderError(
+                                    "Malformed SSE line", category="invalid_stream_chunk"
+                                )
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data)
+                                choices = chunk.get("choices", [])
+                                choice = choices[0] if choices else {}
+                                delta = choice.get("delta", {})
+                                if delta.get("tool_calls"):
+                                    for tc_delta in delta["tool_calls"]:
+                                        idx = tc_delta.get("index", 0)
+                                        if idx not in tool_call_acc:
+                                            tool_call_acc[idx] = {
+                                                "id": "", "name": "",
+                                                "arguments": "",
+                                            }
+                                        if tc_delta.get("id"):
+                                            tool_call_acc[idx]["id"] = tc_delta["id"]
+                                        fn = tc_delta.get("function", {})
+                                        if fn.get("name"):
+                                            tool_call_acc[idx]["name"] = fn["name"]
+                                        if fn.get("arguments"):
+                                            tool_call_acc[idx]["arguments"] += fn["arguments"]
+                                text = delta.get("content") or delta.get("refusal") or ""
+                            except (ValueError, TypeError, AttributeError) as error:
+                                raise ProviderError(
+                                    "Malformed SSE JSON chunk",
+                                    category="invalid_stream_chunk",
+                                ) from error
+                            if not isinstance(text, str):
+                                raise ProviderError(
+                                    "Invalid SSE content", category="invalid_stream_chunk"
+                                )
+                            total += len(text)
+                            if total > request.max_output_characters:
+                                raise ProviderError(
+                                    "Provider output exceeds "
+                                    f"{request.max_output_characters} characters",
+                                    category="output_limit",
+                                )
+                            if text:
+                                if first_token_at is None:
+                                    first_token_at = time.monotonic()
+                                parts.append(text)
+                                yield ProviderTextDeltaEvent(sequence=sequence, delta=text)
+                                sequence += 1
+                            if choice.get("finish_reason") is not None:
+                                finish_reason = str(choice["finish_reason"])
+                            usage.update(_parse_usage(chunk.get("usage")))
+                break  # Success — exit retry loop
+            except httpx.HTTPStatusError as error:
+                if self._is_unsupported_response_format(error.response, request_body):
+                    raise _UnsupportedResponseFormat() from error
+                if (
+                    retry_without_tools
+                    and error.response.status_code == 400
+                ):
+                    # Provider rejected tools — retry without them.
+                    request_body = self._request_body(
+                        messages,
+                        request.response_schema,
+                        request.max_output_tokens,
+                        request.json_mode,
+                        None,
+                        "auto",
+                        stream=True,
+                    )
+                    retry_without_tools = False
+                    continue
+                raise self._http_error(error.response) from error
+            except httpx.ConnectError as error:
+                raise ProviderError(
+                    f"Cannot connect to OpenAI-compatible endpoint {self.base_url}",
+                    category="connection",
+                ) from error
+            except httpx.TimeoutException as error:
+                raise ProviderError(
+                    "OpenAI-compatible response timed out", category="timeout"
+                ) from error
+            except httpx.TransportError as error:
+                raise ProviderError(
+                    "OpenAI-compatible response transport failed",
+                    category="transport_error",
+                ) from error
         completed_at = datetime.now(UTC)
         # Build function-call metadata from accumulated tool calls.
         fc_metadata: list[FunctionCallMetadata] = []
@@ -395,6 +438,12 @@ class OpenAICompatibleProvider:
                             arguments=acc["arguments"],
                         )
                     )
+        # Fallback: if no structured tool calls were returned by the provider,
+        # check if the model emitted them as XML text content.
+        if not fc_metadata and parts:
+            fc_metadata = _parse_xml_tool_calls(
+                "".join(parts), request.tools or None
+            )
         self.last_generation_metadata = GenerationMetadata(
             provider=ProviderName.OPENAI_COMPATIBLE,
             model=self.settings.llm_model,
@@ -402,7 +451,9 @@ class OpenAICompatibleProvider:
             started_at=started_at.isoformat(),
             completed_at=completed_at.isoformat(),
             duration_seconds=time.monotonic() - started,
-            prompt_characters=sum(len(message["content"]) for message in messages),
+            prompt_characters=sum(
+                len(message.get("content") or "") for message in messages
+            ),
             output_characters=len("".join(parts)),
             streaming=True,
             response_format_mode=request.json_mode,
@@ -437,6 +488,22 @@ class OpenAICompatibleProvider:
                     function_calls=pending_calls,
                 )
                 sequence += 1
+        elif fc_metadata:
+            # XML fallback detected tool calls in text content — emit
+            # them as a ProviderToolCallsEvent so streaming clients
+            # receive structured calls instead of raw XML text.
+            yield ProviderToolCallsEvent(
+                sequence=sequence,
+                function_calls=[
+                    ProviderFunctionCall(
+                        call_id=fc.call_id,
+                        name=fc.name,
+                        arguments=fc.arguments,
+                    )
+                    for fc in fc_metadata
+                ],
+            )
+            sequence += 1
         yield ProviderCompletedEvent(sequence=sequence, finish_reason=finish_reason)
 
     def _request_body(
@@ -494,11 +561,16 @@ class OpenAICompatibleProvider:
             raise ProviderError(
                 f"Provider output exceeds {limit} characters", category="output_limit"
             )
+        function_calls = _parse_openai_function_calls(message)
+        # Fallback: if no structured tool calls were returned by the provider,
+        # check if the model emitted them as XML text content.
+        if not function_calls:
+            function_calls = _parse_xml_tool_calls(content)
         return (
             content,
             choice.get("finish_reason"),
             _parse_usage(payload.get("usage")),
-            _parse_openai_function_calls(message),
+            function_calls,
         )
 
     def _effective_json_mode(self) -> JsonMode:
@@ -584,6 +656,62 @@ def _parse_openai_function_calls(message: object) -> list[FunctionCallMetadata]:
                 call_id=call_id,
                 name=name,
                 arguments=arguments,
+            )
+        )
+    return calls
+
+
+def _parse_xml_tool_calls(
+    content: str, tools: list[ProviderFunctionTool] | None = None
+) -> list[FunctionCallMetadata]:
+    """Fallback parser for models that emit tool calls as XML text content.
+
+    Handles the format where models output structured tool calls as plain
+    text instead of using the provider's native function-calling API.
+    """
+    allowed = {t.name for t in tools} if tools else None
+    pattern = re.compile(
+        r"<function=(\w+)>\s*<parameter=(\w+)>(.*?)</parameter"
+        r"\s*>\s*</function>\s*</tool_call>",
+        re.DOTALL,
+    )
+    calls: list[FunctionCallMetadata] = []
+    for idx, m in enumerate(pattern.finditer(content)):
+        name, _param, raw = m.group(1), m.group(2), m.group(3).strip()
+        if allowed is not None and name not in allowed:
+            continue
+        args: dict[str, object] = {}
+        stripped = raw.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, dict):
+                    args = parsed
+            except (ValueError, TypeError):
+                pass
+        if not args:
+            for inner in re.finditer(
+                r"<parameter=(\w+)>(.*?)</parameter>", raw, re.DOTALL
+            ):
+                key, val = inner.group(1), inner.group(2).strip()
+                if val.startswith("{") or val.startswith("["):
+                    try:
+                        args[key] = json.loads(val)
+                    except (ValueError, TypeError):
+                        args[key] = val
+                else:
+                    try:
+                        args[key] = int(val)
+                    except ValueError:
+                        try:
+                            args[key] = float(val)
+                        except ValueError:
+                            args[key] = val
+        calls.append(
+            FunctionCallMetadata(
+                call_id=f"call_xml_{idx}",
+                name=name,
+                arguments=json.dumps(args, ensure_ascii=False),
             )
         )
     return calls

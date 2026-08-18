@@ -25,6 +25,8 @@ from .providers.adapter import CanonicalProviderAdapter
 from .providers.base import (
     ProviderCompletedEvent,
     ProviderFunctionCall,
+    ProviderFunctionTool,
+    ProviderFunctionToolChoice,
     ProviderMessage,
     ProviderReasoningDeltaEvent,
     ProviderRequest,
@@ -219,13 +221,13 @@ label{display:block;color:var(--muted);font-size:13px;margin-bottom:6px}input,se
 .table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px}.usage-table{width:100%;border-collapse:collapse;min-width:760px}.usage-table th,.usage-table td{padding:11px 12px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}.usage-table th{color:var(--muted);font-size:12px;font-weight:650;background:#0d1428}.usage-table th:first-child,.usage-table td:first-child{text-align:left}.usage-table tbody tr:last-child td{border-bottom:0}.usage-table tbody tr:hover{background:#18213a}.model-cell{font-weight:650;color:#b9c8ff}.provider-cell{color:var(--muted);font-size:12px}
 </style></head><body><main><div class="hero"><div><h1>Local Code Worker</h1><p>Провайдеры, ключи и локальные модели — в одном локальном интерфейсе.</p></div><span class="pill" id="health">проверка…</span></div>
 <section class="card" id="routingSettings"><h2 style="margin-top:0">Маршрутизация моделей</h2><p>Запрос начинается с локальных уровней. STRONG используйте как облачную страховку, если локальные модели не справились.</p><div class="route-head"><div><label for="routeMode">Режим</label><select id="routeMode"><option value="router">Router — применять выбор</option><option value="route_llm">RouteLLM policy</option><option value="shadow">Shadow — только сравнивать</option><option value="canary">Canary — стабильная выборка</option><option value="observe_only">Observe only — совместимость</option><option value="legacy">Legacy — одна модель ниже</option></select></div><div class="check"><input id="routeLlm" type="checkbox"><label for="routeLlm">RouteLLM</label></div><div><label for="routeThreshold">Старый порог RouteLLM</label><input id="routeThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="localThreshold">LOCAL threshold</label><input id="localThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="strongThreshold">STRONG threshold</label><input id="strongThreshold" type="number" min="0" max="1" step="0.05"></div><div><label for="canaryPercent">Canary, %</label><input id="canaryPercent" type="number" min="0" max="100" step="1"></div><div><label for="maxEscalations">Максимум эскалаций</label><input id="maxEscalations" type="number" min="0" max="10" step="1"></div></div><div class="tiers" id="tierCards"></div><div class="actions"><button id="saveRouting">Сохранить маршрутизацию</button></div><div class="status" id="routingStatus"></div></section>
-<section class="card"><div class="grid"><div><label for="provider">Провайдер</label><select id="provider"><option value="ollama">Ollama (локально)</option><option value="openai-compatible">OpenAI-compatible API</option></select></div><div><label for="baseUrl">Base URL</label><input id="baseUrl"></div><div><label for="model">Модель</label><select id="model"></select></div><div><label for="contextLength">Контекст (токены)</label><input id="contextLength" type="number" min="512" max="131072" step="512"></div><div id="pullBlock"><label for="pullModel">Имя модели для скачивания (необязательно)</label><input id="pullModel" placeholder="qwen2.5-coder:7b-instruct-q5_K_M"></div><div id="keyBlock"><label for="apiKey">API-ключ (пусто = сохранить текущий)</label><div class="keyrow"><input id="apiKey" type="password" autocomplete="new-password" placeholder="••••••••"><button class="secondary" id="clearKey" type="button">Удалить</button></div></div></div>
+<section class="card"><div class="grid"><div><label for="provider">Провайдер</label><select id="provider"><option value="ollama">Ollama (локально)</option><option value="openai-compatible">OpenAI-compatible API</option></select></div><div><label for="baseUrl">Base URL</label><input id="baseUrl"></div><div><label for="model">Модель</label><select id="model"></select></div><div><label for="contextLength">Контекст (токены)</label><input id="contextLength" type="number" min="512" max="1048576" step="512"></div><div id="pullBlock"><label for="pullModel">Имя модели для скачивания (необязательно)</label><input id="pullModel" placeholder="qwen2.5-coder:7b-instruct-q5_K_M"></div><div id="keyBlock"><label for="apiKey">API-ключ (пусто = сохранить текущий)</label><div class="keyrow"><input id="apiKey" type="password" autocomplete="new-password" placeholder="••••••••"><button class="secondary" id="clearKey" type="button">Удалить</button></div></div></div>
 <div class="actions"><button id="save">Сохранить и проверить</button><button class="secondary" id="refresh">Обновить модели</button><button class="secondary" id="pull">Скачать модель</button></div><div class="status" id="status"></div><textarea id="progress" readonly placeholder="Прогресс загрузки Ollama…"></textarea></section><section class="card" style="margin-top:18px"><h2 style="margin:0">Память модели</h2><p>Выгрузка модели из VRAM при простое запросов.</p><div class="grid"><div><label for="unloadPolicy">Выгрузка модели при простое</label><select id="unloadPolicy"><option value="immediate">Сразу (по умолчанию)</option><option value="5">5 мин</option><option value="10">10 мин</option><option value="30">30 мин</option><option value="never">Никогда</option></select></div></div><div class="actions"><button id="saveUnload">Сохранить</button></div><div class="status" id="unloadStatus"></div></section><section class="card" style="margin-top:18px"><div class="hero" style="margin-bottom:12px"><div><h2 style="margin:0">Мониторинг системы и моделей</h2><p style="margin:4px 0 0">Обновляется каждые 15 секунд.</p></div><span class="pill" id="runtimeUpdated">проверка…</span></div><div class="grid" id="metrics"></div><div class="status" id="runtime">Проверка состояния Ollama…</div></section><section class="card" style="margin-top:18px"><h2 style="margin:0">Маршрутизация</h2><p>Распределение, эскалации, latency и экономия cloud tokens.</p><div class="grid" id="routerMetrics"></div></section><section class="card" style="margin-top:18px"><div class="hero" style="margin-bottom:12px"><div><h2 style="margin:0">Статистика обращений</h2><p style="margin:4px 0 0">Накопительные данные; API-вызовы и legacy proposal учитываются раздельно.</p></div><span class="pill" id="usageUpdated">проверка…</span></div><div class="table-wrap"><table class="usage-table"><thead><tr><th>Модель</th><th>Запросы</th><th>Входные</th><th>Выходные</th><th>Ток/с</th><th>API успешно</th><th>API с ошибкой</th><th>Proposal валиден</th><th>Proposal невалиден</th></tr></thead><tbody id="usageStats"></tbody></table></div></section></main>
 <script>
 const $=id=>document.getElementById(id), provider=$('provider'), baseUrl=$('baseUrl'), model=$('model'), contextLength=$('contextLength'), pullModel=$('pullModel'), apiKey=$('apiKey'), status=$('status'), progress=$('progress'), runtime=$('runtime'), runtimeUpdated=$('runtimeUpdated'), metrics=$('metrics'), routerMetrics=$('routerMetrics'), usageStats=$('usageStats');unloadPolicy=$('unloadPolicy');let clearKey=false;
 const tierNames=['local','mid','strong'],tierLabels={local:'LOCAL',mid:'MID',strong:'STRONG'},tierHelp={local:'Первая локальная модель: быстрые и простые задачи.',mid:'Локальная модель для рассуждений и сложного исполнения.',strong:'Последний уровень; здесь можно указать облачную модель.'},clearedTierKeys=new Set();const tierFindLoading={local:false,mid:false,strong:false},tierModelLists={local:[],mid:[],strong:[]};const thinkLevels=['low','medium','high','max'];
 function routingMessage(text,ok=true){const node=$('routingStatus');node.textContent=text;node.className='status '+(ok?'ok':'bad')}
-function tierCard(name){const card=document.createElement('div');card.className='tier';card.dataset.tier=name;card.innerHTML=`<h3>${tierLabels[name]}</h3><p>${tierHelp[name]}</p><div class="check"><input id="${name}Enabled" type="checkbox"><label for="${name}Enabled">Уровень включён</label></div><label for="${name}Provider">Провайдер</label><select id="${name}Provider"><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI-compatible</option></select><label for="${name}BaseUrl">Base URL</label><input id="${name}BaseUrl"><label for="${name}Model">Модель</label><select id="${name}Model"></select><label for="${name}Context">Контекст</label><input id="${name}Context" type="number" min="512" max="131072" step="512"><label for="${name}Parallel">Параллелизм (слотов)</label><input id="${name}Parallel" type="number" min="1" max="64" step="1" placeholder="по умолчанию"><label for="${name}Think">Think (рассуждения)</label><select id="${name}Think"><option value="">по умолчанию</option><option value="show">включено с выводом</option><option value="hide">включено без вывода</option><option value="off">выключено</option></select><label for="${name}ThinkLevel">Уровень размышлений</label><input id="${name}ThinkLevel" type="range" min="0" max="4" step="1" value="0"><small id="${name}ThinkLevelLabel">авто</small><label for="${name}Key">API-ключ (пусто = оставить)</label><div class="keyrow"><input id="${name}Key" type="password" autocomplete="new-password"><button class="secondary" type="button" data-clear-key="${name}">×</button></div><small id="${name}KeyState"></small><button class="secondary" id="${name}FindModels" type="button" data-find-models="${name}">Найти модели</button><small id="${name}FindStatus"></small>`;return card}
+function tierCard(name){const card=document.createElement('div');card.className='tier';card.dataset.tier=name;card.innerHTML=`<h3>${tierLabels[name]}</h3><p>${tierHelp[name]}</p><div class="check"><input id="${name}Enabled" type="checkbox"><label for="${name}Enabled">Уровень включён</label></div><label for="${name}Provider">Провайдер</label><select id="${name}Provider"><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI-compatible</option></select><label for="${name}BaseUrl">Base URL</label><input id="${name}BaseUrl"><label for="${name}Model">Модель</label><select id="${name}Model"></select><label for="${name}Context">Контекст</label><input id="${name}Context" type="number" min="512" max="1048576" step="512"><label for="${name}Parallel">Параллелизм (слотов)</label><input id="${name}Parallel" type="number" min="1" max="64" step="1" placeholder="по умолчанию"><label for="${name}Think">Think (рассуждения)</label><select id="${name}Think"><option value="">по умолчанию</option><option value="show">включено с выводом</option><option value="hide">включено без вывода</option><option value="off">выключено</option></select><label for="${name}ThinkLevel">Уровень размышлений</label><input id="${name}ThinkLevel" type="range" min="0" max="4" step="1" value="0"><small id="${name}ThinkLevelLabel">авто</small><label for="${name}Key">API-ключ (пусто = оставить)</label><div class="keyrow"><input id="${name}Key" type="password" autocomplete="new-password"><button class="secondary" type="button" data-clear-key="${name}">×</button></div><small id="${name}KeyState"></small><button class="secondary" id="${name}FindModels" type="button" data-find-models="${name}">Найти модели</button><small id="${name}FindStatus"></small>`;return card}
 for(const name of tierNames)$('tierCards').appendChild(tierCard(name));for(const name of tierNames){const sl=$(name+'ThinkLevel');sl.addEventListener('input',()=>{$(name+'ThinkLevelLabel').textContent=sl.value==='0'?'авто':thinkLevels[Number(sl.value)-1]})}
 const legacySettings=provider.closest('section.card'),legacyModes=new Set(['legacy','observe_only','shadow','canary']);
 function syncLegacySettings(){legacySettings.hidden=!legacyModes.has($('routeMode').value)}
@@ -420,12 +422,14 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         int | None,
         bool | None,
         dict[str, object] | None,
+        list[ProviderFunctionTool],
+        str | ProviderFunctionToolChoice,
     ]:
         payload = self._read_json(max_bytes=REQUEST_LIMITS.max_ui_request_bytes)
         raw_messages = payload.get("messages")
         if not isinstance(raw_messages, list) or not raw_messages:
             raise ValueError("messages must be a non-empty array")
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, object]] = []
         for raw_message in raw_messages:
             if not isinstance(raw_message, dict):
                 raise ValueError("each message must be an object")
@@ -433,9 +437,29 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             content = raw_message.get("content")
             if role not in {"system", "user", "assistant", "tool"}:
                 raise ValueError("message role is unsupported")
-            if not isinstance(content, str):
-                raise ValueError("message content must be a string")
-            messages.append({"role": role, "content": content})
+            if role == "assistant" and raw_message.get("tool_calls"):
+                # Preserve tool_calls in assistant messages — the API
+                # needs them to match subsequent tool result messages.
+                msg: dict[str, object] = {"role": role}
+                if content is not None:
+                    if not isinstance(content, str):
+                        raise ValueError("message content must be a string")
+                    msg["content"] = content
+                msg["tool_calls"] = raw_message["tool_calls"]
+                messages.append(msg)
+            elif role == "tool":
+                # Tool result messages must carry tool_call_id.
+                if not isinstance(content, str):
+                    raise ValueError("message content must be a string")
+                msg = {"role": role, "content": content}
+                tool_call_id = raw_message.get("tool_call_id")
+                if tool_call_id:
+                    msg["tool_call_id"] = tool_call_id
+                messages.append(msg)
+            else:
+                if not isinstance(content, str):
+                    raise ValueError("message content must be a string")
+                messages.append({"role": role, "content": content})
 
         settings = self._settings()
         model = validate_model_name(str(payload.get("model") or "local-code-worker/auto"))
@@ -522,6 +546,46 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         stream = payload.get("stream", False)
         if not isinstance(stream, bool):
             raise ValueError("stream must be a boolean")
+        # Extract tools/tool_choice for function calling support.
+        parsed_tools: list[ProviderFunctionTool] = []
+        raw_tools = payload.get("tools")
+        if isinstance(raw_tools, list):
+            for raw_tool in raw_tools:
+                if not isinstance(raw_tool, dict):
+                    raise ValueError("each tool must be an object")
+                if raw_tool.get("type") != "function":
+                    continue
+                fn = raw_tool.get("function")
+                if not isinstance(fn, dict):
+                    raise ValueError("tool.function must be an object")
+                name = fn.get("name")
+                if not isinstance(name, str) or not name:
+                    raise ValueError("tool.function.name must be a non-empty string")
+                parsed_tools.append(
+                    ProviderFunctionTool(
+                        name=name,
+                        description=fn.get("description"),
+                        parameters=fn.get("parameters") or {},
+                        strict=fn.get("strict", True),
+                    )
+                )
+        parsed_tool_choice: str | ProviderFunctionToolChoice = "auto"
+        raw_tool_choice = payload.get("tool_choice")
+        if raw_tool_choice is not None:
+            if isinstance(raw_tool_choice, str):
+                if raw_tool_choice not in {"auto", "none", "required"}:
+                    raise ValueError("tool_choice string must be auto, none, or required")
+                parsed_tool_choice = raw_tool_choice
+            elif isinstance(raw_tool_choice, dict):
+                tc_fn = raw_tool_choice.get("function")
+                if isinstance(tc_fn, dict) and tc_fn.get("name"):
+                    parsed_tool_choice = ProviderFunctionToolChoice(
+                        name=str(tc_fn["name"])
+                    )
+                else:
+                    raise ValueError("tool_choice object must have function.name")
+            else:
+                raise ValueError("tool_choice must be a string or object")
         return (
             settings.model_copy(update=updates),
             messages,
@@ -530,6 +594,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             client_context_length,
             client_think,
             response_schema,
+            parsed_tools,
+            parsed_tool_choice,
         )
 
     def _chat_completion(self, lease: InferenceLease) -> None:
@@ -541,6 +607,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             client_context_length,
             client_think,
             response_schema,
+            client_tools,
+            client_tool_choice,
         ) = self._chat_request()
         provider_request = ProviderRequest(
             messages=[ProviderMessage.model_validate(message) for message in messages],
@@ -549,6 +617,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
             max_output_tokens=settings.llm_max_output_tokens,
             json_mode=settings.llm_json_mode,
             stream=stream,
+            tools=client_tools,
+            tool_choice=client_tool_choice,
         )
         routing_settings = load_gateway_routing_settings(self.env_path)
         routellm_backend = (
@@ -664,6 +734,22 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                         _chunk({"reasoning_content": event.delta})
                     elif isinstance(event, ProviderTextDeltaEvent):
                         _chunk({"content": event.delta})
+                    elif isinstance(event, ProviderToolCallsEvent):
+                        # Emit structured tool calls as a delta chunk so
+                        # clients can render them natively instead of raw text.
+                        tc_deltas = []
+                        for idx, fc in enumerate(event.function_calls):
+                            tc_deltas.append({
+                                "index": idx,
+                                "id": fc.call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": fc.name,
+                                    "arguments": fc.arguments,
+                                },
+                            })
+                        _chunk({"tool_calls": tc_deltas})
+                        finish_reason = "tool_calls"
                     elif isinstance(event, ProviderUsageEvent):
                         usage = {
                             "prompt_tokens": event.usage.input_tokens,
@@ -715,6 +801,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 response_schema,
                 settings.llm_max_output_characters,
                 settings.llm_max_output_tokens,
+                tools=client_tools or None,
+                tool_choice=client_tool_choice,
             )
         except (ProviderError, WorkerError, OSError):
             record_model_call(
@@ -748,6 +836,8 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 response_schema,
                 settings.llm_max_output_characters,
                 settings.llm_max_output_tokens,
+                tools=client_tools or None,
+                tool_choice=client_tool_choice,
             )
         metadata = provider.last_generation_metadata
         record_model_call(metadata, kind="chat", outcome="completed")
@@ -756,11 +846,31 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
         finish_reason = metadata.finish_reason if metadata and metadata.finish_reason else "stop"
         usage = metadata.usage if metadata else {}
         reasoning = metadata.reasoning if metadata else None
+        fc_list = metadata.function_calls if metadata else []
         normalized_usage = {
             "prompt_tokens": int(usage.get("prompt_tokens", 0)),
             "completion_tokens": int(usage.get("completion_tokens", 0)),
             "total_tokens": int(usage.get("total_tokens", 0)),
         }
+        message: dict[str, object] = {
+            "role": "assistant",
+            "content": content,
+        }
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        if fc_list:
+            message["tool_calls"] = [
+                {
+                    "id": fc.call_id,
+                    "type": "function",
+                    "function": {
+                        "name": fc.name,
+                        "arguments": fc.arguments,
+                    },
+                }
+                for fc in fc_list
+            ]
+            finish_reason = "tool_calls"
         self._send_json(
             HTTPStatus.OK,
             {
@@ -771,11 +881,7 @@ class WorkerWebHandler(BaseHTTPRequestHandler):
                 "choices": [
                     {
                         "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": content,
-                            **({"reasoning_content": reasoning} if reasoning else {}),
-                        },
+                        "message": message,
                         "finish_reason": finish_reason,
                     }
                 ],

@@ -66,7 +66,7 @@ class TierConfig(StrictModel):
     model: str = Field(min_length=1)
     enabled: bool = True
     base_url: HttpUrl | None = None
-    context_length: int | None = Field(default=None, ge=512, le=131_072)
+    context_length: int | None = Field(default=None, ge=512, le=1_048_576)
     # Parallel request slots for this tier's Ollama runner. Ollama sizes the
     # runner context as num_ctx * num_parallel, so large models need 1 while
     # small matching models can use several slots. Default 1.

@@ -23,7 +23,7 @@ The local web UI manages provider and model settings and exposes a loopback Open
 gateway. Repository source sent to an external provider leaves the machine; review task file lists
 and provider policy before generation.
 
-Package metadata currently reports version `1.2.0`. Release history is maintained in
+Package metadata currently reports version `1.3.0`. Release history is maintained in
 [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Workspace container quick start

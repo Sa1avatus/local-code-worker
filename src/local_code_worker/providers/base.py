@@ -26,7 +26,7 @@ class ProviderCapabilities(StrictModel):
 
 class ProviderMessage(StrictModel):
     role: str = Field(min_length=1)
-    content: str
+    content: str | None = ""
     tool_calls: list[dict[str, object]] | None = Field(default=None, exclude=True)
     tool_call_id: str | None = Field(default=None, exclude=True)
 

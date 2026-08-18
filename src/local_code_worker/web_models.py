@@ -30,7 +30,7 @@ class ProviderSettingsInput(BaseModel):
     provider: ProviderName
     base_url: HttpUrl
     model: str
-    context_length: int = Field(ge=512, le=131_072)
+    context_length: int = Field(ge=512, le=1_048_576)
     api_key_action: Literal["keep", "replace", "clear"] = "keep"
     api_key: SecretStr | None = None
 
@@ -67,7 +67,7 @@ class RoutingTierSettingsInput(BaseModel):
     provider: ProviderName
     base_url: HttpUrl
     model: str
-    context_length: int = Field(ge=512, le=131_072)
+    context_length: int = Field(ge=512, le=1_048_576)
     num_parallel: int = Field(default=1, ge=1, le=64)
     think: bool | None = None
     show_reasoning: bool | None = None

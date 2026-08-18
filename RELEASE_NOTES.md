@@ -3,7 +3,7 @@
 This file preserves the original release-note narrative. The canonical version-by-version history
 is now maintained in [`CHANGELOG.md`](CHANGELOG.md).
 
-## Unreleased
+## 1.3.0
 
 ### Web UI and model discovery
 
@@ -22,7 +22,7 @@ is now maintained in [`CHANGELOG.md`](CHANGELOG.md).
 ### Validation
 
 - `python -m ruff check src tests`
-- `python -m pytest tests -q` (`365 passed`)
+- `python -m pytest tests -q` (`398 passed`)
 
 ## 1.2.0
 

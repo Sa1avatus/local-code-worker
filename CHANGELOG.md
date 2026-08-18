@@ -6,11 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 follow Semantic Versioning. The repository currently has no Git tags; dates and versions below are
 derived from project metadata and commit history.
 
-## [Unreleased]
+## [1.3.0] - 2026-08-18
 
 ### Added
 
-- Added a per-tier `num_parallel` setting for LOCAL/MID/STRONG routing tiers (default 1). The
+- Added per-tier `num_parallel` setting for LOCAL/MID/STRONG routing tiers (default 1). The
   gateway sends it to Ollama per request; because Ollama sizes the runner context as
   `num_ctx * num_parallel`, large models (e.g. gemma4:12b at 64k) must use 1 slot while small
   matching models can opt into several. Ollama 0.32.x applies the value server-side only
@@ -58,6 +58,13 @@ derived from project metadata and commit history.
 
 ### Fixed
 
+- Fixed `/v1/chat/completions` returning HTTP 400 on follow-up requests: the gateway stripped
+  `tool_calls` from assistant messages and `tool_call_id` from tool result messages, producing an
+  invalid conversation context that cloud APIs rejected. Assistant messages with tool_calls and
+  tool result messages now preserve their OpenAI-required fields.
+- Fixed `ProviderMessage.content` being required — assistant messages with tool_calls have
+  `content: null` which caused a validation error.
+- Fixed `KeyError: 'content'` in latency tracking when assistant messages lack content.
 - Forwarded the Ollama `thinking` trace through the gateway: it is now surfaced as
   `reasoning_content` on `/v1/chat/completions` messages and as `reasoning` on the `/v1/responses`
   output message, so reasoning models show their thinking to the client instead of silently
@@ -115,7 +122,7 @@ derived from project metadata and commit history.
 
 ### Changed
 
-- Changed the packaged project version from `1.1.0` to `1.2.0`.
+- Changed the packaged project version from `1.2.0` to `1.3.0`.
 - Changed task generation to prefer XML prompt contracts while keeping model responses as strict,
   schema-validated JSON proposals.
 - Changed the gateway request limit to use separate defaults: 1 MiB for UI/configuration requests
